@@ -1,0 +1,685 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+LFM Chirp Sweep (V1)
+
+Sweeps chirp bandwidth (f_start, f_stop) and duration. Uses matched filter
+(cross-correlation of received signal with transmitted template) for analysis,
+giving FWHM ≈ 0.886/B_chirp for a flat-spectrum LFM.
+
+Also tests amplitude-compensated chirps where the envelope is pre-distorted
+by 1/|H(f)| so the transmitted spectrum is flattened across a wider band.
+
+Piezo passband (from stepped-sine characterization):
+  -3 dB:  40500–42200 Hz  (1700 Hz)
+  -6 dB:  39100–42850 Hz  (3750 Hz)
+  center: 41350 Hz
+
+@author: cyrusurheim
+Created: July 2026
+"""
+
+import numpy as np
+import pyaudio
+import socket
+import time
+import os
+import json
+from datetime import datetime
+from scipy import signal as scipy_signal
+from scipy.signal import butter, filtfilt, hilbert
+from scipy.io import wavfile
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+# ── Hardware ─────────────────────────────────────────────────────────────────
+SDG_IP              = "10.11.13.230"
+SDG_PORT            = 5025
+SDG_SAMPLE_RATE     = 400000        # 400 kSa/s
+DODOMIC_SAMPLE_RATE = 384000        # UltraMic
+CHUNK_SIZE          = 4096
+SDG_MAX_SAMPLES     = 16384
+AMPLITUDE           = 0.9
+RECORD_DURATION     = 1.0           # s — captures chirp + echo with margin
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+OUTPUT_DIR       = '/Users/cyrusurheim_1/Downloads/Stubbs_Stuff/Claude_Dir/siglent_project/'
+PIEZO_CHAR_FILE  = OUTPUT_DIR + 'stepped_sine_characterization.npz'
+VERSION          = "V1"
+
+# ── Chirp configurations ──────────────────────────────────────────────────────
+# (f_start Hz, f_stop Hz, duration_ms, label, amplitude_shape)
+# amplitude_shape: 'flat' | 'piezo_compensated'
+#
+# Bandwidth sweep: all 10 ms, centered at 41350 Hz; from within -3dB BW
+# outward to explore how much of the wide-band chirp the piezo actually passes.
+# Duration sweep: fixed 3.75 kHz (actual -6dB BW), vary 2/5/10 ms.
+# Compensated: pre-distort envelope so transmitted spectrum is flatter.
+CHIRP_CONFIGS = [
+    # ── Bandwidth sweep, 10 ms, flat amplitude ──────────────────────────────
+    # Measured passband boundaries (asymmetric around 41350 Hz)
+    (40500, 42200,  10, '1.7kHz_-3dB_10ms',     'flat'),  # within -3 dB BW
+    (39100, 42850,  10, '3.75kHz_-6dB_10ms',    'flat'),  # within -6 dB BW
+    # Symmetric around 41350 — progressively wider
+    (39350, 43350,  10, '4kHz_sym_10ms',         'flat'),
+    (38350, 44350,  10, '6kHz_sym_10ms',         'flat'),
+    (37350, 45350,  10, '8kHz_sym_10ms',         'flat'),
+    (35350, 47350,  10, '12kHz_sym_10ms',        'flat'),  # exploratory
+    # ── Duration sweep, 3.75 kHz flat ───────────────────────────────────────
+    (39100, 42850,   2, '3.75kHz_-6dB_2ms',     'flat'),
+    (39100, 42850,   5, '3.75kHz_-6dB_5ms',     'flat'),
+    # ── Amplitude-compensated variants ──────────────────────────────────────
+    (39100, 42850,  10, '3.75kHz_-6dB_10ms_comp', 'piezo_compensated'),
+    (38350, 44350,  10, '6kHz_sym_10ms_comp',      'piezo_compensated'),
+    (37350, 45350,  10, '8kHz_sym_10ms_comp',      'piezo_compensated'),
+]
+
+# TOF search window for 2 m round trip (~5800 μs)
+# Tight window: ±700 μs around expected 5800 μs avoids room echoes and boundary artifacts
+TOF_SEARCH_MIN_US = 5000
+TOF_SEARCH_MAX_US = 6500
+
+
+# ── SDG1062X LAN class ────────────────────────────────────────────────────────
+
+class SDG1062X_LAN:
+    def __init__(self, ip=SDG_IP, port=SDG_PORT, timeout=10.0):
+        self.ip, self.port, self.timeout = ip, port, timeout
+        self.sock = None
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect((self.ip, self.port))
+        print(f"Connected to SDG @ {self.ip}:{self.port}")
+
+    def disconnect(self):
+        if self.sock:
+            self.sock.close()
+            self.sock = None
+
+    def write(self, cmd):
+        self.sock.sendall((cmd + '\n').encode('utf-8'))
+
+    def write_raw(self, data):
+        self.sock.sendall(data)
+
+    def read(self, bufsize=4096):
+        return self.sock.recv(bufsize).decode('utf-8').strip()
+
+    def query(self, cmd):
+        self.write(cmd)
+        time.sleep(0.1)
+        return self.read()
+
+    def upload_waveform(self, name, wave_data, freq_hz, ampl_vpp=2.0, channel=1):
+        wave_int16 = np.clip(wave_data, -1.0, 1.0)
+        wave_int16 = (wave_int16 * 32767).astype(np.int16)
+        bin_data   = wave_int16.astype('<i2').tobytes()
+        cmd_prefix = (f"C{channel}:WVDT WVNM,{name},FREQ,{freq_hz},"
+                      f"AMPL,{ampl_vpp},OFST,0,PHASE,0,WAVEDATA,")
+        self.write_raw(cmd_prefix.encode('utf-8') + bin_data + b'\n')
+        time.sleep(0.5)
+        self.write(f"C{channel}:ARWV NAME,{name}")
+        time.sleep(0.2)
+
+    def set_arb_mode(self, channel=1):
+        self.write(f"C{channel}:BSWV WVTP,ARB")
+        time.sleep(0.2)
+
+    def output_on(self, channel=1):
+        self.write(f"C{channel}:OUTP ON")
+
+    def output_off(self, channel=1):
+        self.write(f"C{channel}:OUTP OFF")
+
+
+# ── Piezo response loader ─────────────────────────────────────────────────────
+
+def load_piezo_response():
+    """
+    Load stepped-sine frequency response for amplitude compensation.
+    H_mag_smooth is in dB; convert to linear amplitude and normalize to peak=1.
+    """
+    try:
+        d = np.load(PIEZO_CHAR_FILE)
+        freqs = d['freqs'].astype(float)
+        mag_db = d['H_mag_smooth']
+        mag_lin = 10.0 ** (mag_db / 20.0)        # dB → linear amplitude
+        mag_lin = mag_lin / np.max(mag_lin)       # normalize peak = 1
+        print(f"Loaded piezo response: {len(freqs)} pts, "
+              f"{freqs[0]/1000:.0f}–{freqs[-1]/1000:.0f} kHz")
+        return {'freq': freqs, 'magnitude': mag_lin}
+    except Exception as e:
+        print(f"Could not load piezo response: {e}")
+        return None
+
+
+# ── Chirp generation ──────────────────────────────────────────────────────────
+
+def generate_lfm_chirp(f_start, f_stop, duration_ms, sample_rate,
+                       amplitude_shape='flat', piezo_response=None):
+    """
+    Generate LFM (up-)chirp from f_start to f_stop over duration_ms.
+
+    amplitude_shape='flat':
+        Constant amplitude envelope — standard LFM, flat power spectrum over B.
+
+    amplitude_shape='piezo_compensated':
+        Amplitude ∝ 1/|H(f_inst)| so the spectrum seen at the reflector is
+        flatter, extending useful bandwidth beyond the -3 dB piezo rolloff.
+        Clipped at 10% of peak response to avoid blowing up in the noise floor.
+
+    Returns: (t, chirp_signal, f_instantaneous)
+    """
+    dur_s  = duration_ms / 1000.0
+    n      = int(dur_s * sample_rate)
+    t      = np.arange(n) / sample_rate
+    f_inst = f_start + (f_stop - f_start) / dur_s * t
+    phase  = 2 * np.pi * (f_start * t + (f_stop - f_start) / (2 * dur_s) * t ** 2)
+
+    if amplitude_shape == 'piezo_compensated' and piezo_response is not None:
+        mag = np.interp(f_inst, piezo_response['freq'], piezo_response['magnitude'])
+        mag = np.clip(mag, 0.10, None)          # floor at 10 % → cap gain at 20 dB
+        amp_env = AMPLITUDE / mag
+        amp_env = amp_env / np.max(amp_env) * AMPLITUDE
+    else:
+        amp_env = AMPLITUDE
+
+    chirp = amp_env * np.sin(phase)
+    # Light Tukey taper to suppress spectral splatter at waveform start/end
+    chirp *= scipy_signal.windows.tukey(n, alpha=0.05)
+    return t, chirp, f_inst
+
+
+def create_sdg_buffer(chirp_at_dodo_rate, duration_ms):
+    """
+    Resample chirp to SDG rate and zero-pad to rep period.
+
+    Dead time = 15 ms after chirp end, which is > TOF (~5.8 ms) + chirp
+    duration, so the echo always clears before the next cycle starts.
+    """
+    TOF_MARGIN_MS  = 15.0
+    period_ms      = duration_ms + TOF_MARGIN_MS
+    buf_samples    = min(int(period_ms / 1000 * SDG_SAMPLE_RATE), SDG_MAX_SAMPLES)
+    actual_rep_rate = SDG_SAMPLE_RATE / buf_samples
+
+    n_sdg      = int(duration_ms / 1000 * SDG_SAMPLE_RATE)
+    chirp_sdg  = scipy_signal.resample(chirp_at_dodo_rate, n_sdg)
+    peak       = np.max(np.abs(chirp_sdg))
+    if peak > 0:
+        chirp_sdg = chirp_sdg / peak * 0.9
+
+    buf = np.zeros(buf_samples)
+    buf[:min(n_sdg, buf_samples)] = chirp_sdg[:min(n_sdg, buf_samples)]
+    return buf, actual_rep_rate
+
+
+# ── Recording ─────────────────────────────────────────────────────────────────
+
+def find_ultramic():
+    pa = pyaudio.PyAudio()
+    mic_index = None
+    print("\nAvailable audio devices:")
+    for i in range(pa.get_device_count()):
+        info = pa.get_device_info_by_index(i)
+        if info['maxInputChannels'] > 0:
+            print(f"  [{i}] {info['name']}")
+            if 'UltraMic' in info['name']:
+                mic_index = i
+    if mic_index is None:
+        print("UltraMic not found!")
+        pa.terminate()
+        return None, None
+    print(f"Using UltraMic at index {mic_index}")
+    return pa, mic_index
+
+
+def record_audio(pa, mic_index, duration=RECORD_DURATION):
+    n = int(duration * DODOMIC_SAMPLE_RATE)
+    stream = pa.open(format=pyaudio.paInt16, channels=1,
+                     rate=DODOMIC_SAMPLE_RATE, input=True,
+                     input_device_index=mic_index, frames_per_buffer=CHUNK_SIZE)
+    frames, remaining = [], n
+    while remaining > 0:
+        chunk = min(CHUNK_SIZE, remaining)
+        frames.append(stream.read(chunk, exception_on_overflow=False))
+        remaining -= chunk
+    stream.stop_stream()
+    stream.close()
+    return np.frombuffer(b''.join(frames), dtype=np.int16).astype(np.float64) / 32768.0
+
+
+# ── Analysis ──────────────────────────────────────────────────────────────────
+
+def bandpass_filter(sig, fs, f_low, f_high, order=4):
+    nyq = fs / 2
+    b, a = butter(order, [f_low / nyq, f_high / nyq], btype='band')
+    return filtfilt(b, a, sig)
+
+
+def find_peak_parabolic(envelope, lags_us, search_min_us, search_max_us):
+    """Argmax + parabolic sub-sample interpolation within search range."""
+    mask = (lags_us >= search_min_us) & (lags_us <= search_max_us)
+    if not np.any(mask):
+        return None, None
+    region    = envelope[mask]
+    lags_reg  = lags_us[mask]
+    idx = np.argmax(region)
+    if idx < 1 or idx >= len(region) - 1:
+        return float(lags_reg[idx]), float(region[idx])
+    y_m, y_0, y_p = region[idx-1], region[idx], region[idx+1]
+    denom = 2 * (y_m - 2*y_0 + y_p)
+    delta = np.clip((y_m - y_p) / denom, -0.5, 0.5) if abs(denom) > 1e-10 else 0.0
+    step    = float(lags_reg[1] - lags_reg[0])
+    peak_us = float(lags_reg[idx]) + delta * step
+    peak_v  = float(y_0 - (y_m - y_p) * delta / 4)
+    return peak_us, peak_v
+
+
+def measure_fwhm_at(envelope, lags_us, peak_us):
+    """Half-max crossing FWHM centred on peak_us."""
+    idx = int(np.argmin(np.abs(lags_us - peak_us)))
+    half = envelope[idx] / 2.0
+    l = idx
+    while l > 0 and envelope[l] > half:
+        l -= 1
+    r = idx
+    while r < len(envelope) - 1 and envelope[r] > half:
+        r += 1
+    return (r - l) / DODOMIC_SAMPLE_RATE * 1e6
+
+
+def hp_filter_30k(sig, fs, order=8):
+    """Order-8 HP at 30 kHz via SOS (rejects 25 kHz lab noise, passes piezo band)."""
+    from scipy.signal import sosfiltfilt
+    sos = butter(order, 30000 / (fs / 2), btype='high', output='sos')
+    return sosfiltfilt(sos, sig)
+
+
+def matched_filter_analysis(received, template, f_start, f_stop):
+    """
+    Full-signal autocorrelation approach.
+
+    The matched-filter (cross-correlation with transmitted template) fails when
+    the chirp duration is comparable to TOF (~5.7 ms) because incident and
+    reflected chirps overlap in the recording.  The autocorrelation of the
+    received signal is robust regardless of chirp duration — all 20-40
+    repetitions contribute to the TOF peak with no phase alignment needed.
+
+    Returns a dict with the same keys as before so the rest of the pipeline
+    is unchanged.  xcorr / xcorr_env / lags_us now hold the autocorrelation
+    rather than the cross-correlation; tof_us and fwhm_us are the TOF peak
+    position and FWHM; incident_us and sidelobe_db are set to None.
+    """
+    fs = DODOMIC_SAMPLE_RATE
+
+    rx  = hp_filter_30k(received, fs)
+
+    # Full-signal autocorrelation — no template needed
+    xcorr   = np.correlate(rx, rx, mode='full')
+    center  = len(xcorr) // 2
+    lags_us = (np.arange(len(xcorr)) - center) / fs * 1e6
+    xcorr  /= np.max(np.abs(xcorr))
+
+    xcorr_env = np.abs(hilbert(xcorr))
+    xcorr_env /= np.max(xcorr_env) + 1e-10
+
+    # TOF peak
+    tof_us, tof_val = find_peak_parabolic(
+        xcorr_env, lags_us, TOF_SEARCH_MIN_US, TOF_SEARCH_MAX_US)
+
+    # FWHM at TOF peak
+    fwhm_us = measure_fwhm_at(xcorr_env, lags_us, tof_us) if tof_us is not None else None
+
+    # Lag-0 FWHM (bandwidth reference — set on returned dict as extra key)
+    half0 = 0.5
+    li = center
+    while li > 0 and xcorr_env[li] > half0: li -= 1
+    ri = center
+    while ri < len(xcorr_env) - 1 and xcorr_env[ri] > half0: ri += 1
+    lag0_fwhm_us = (ri - li) / fs * 1e6
+
+    # TOF/lag-0 ratio
+    tof_idx  = int(np.argmin(np.abs(lags_us - tof_us))) if tof_us is not None else None
+    ratio_db = (20 * np.log10(xcorr_env[tof_idx] / xcorr_env[center] + 1e-12)
+                if tof_idx is not None else None)
+
+    return dict(xcorr=xcorr, xcorr_env=xcorr_env, lags_us=lags_us,
+                incident_us=None, tof_us=tof_us,
+                fwhm_us=fwhm_us, lag0_fwhm_us=lag0_fwhm_us,
+                ratio_db=ratio_db, sidelobe_db=None)
+
+
+def theoretical_fwhm_us(f_start, f_stop):
+    """Ideal matched-filter FWHM for flat-spectrum LFM: 0.886/B."""
+    return 0.886 / abs(f_stop - f_start) * 1e6
+
+
+# ── Plotting ──────────────────────────────────────────────────────────────────
+
+def plot_chirp_result(result, config, output_path):
+    f_start, f_stop, dur_ms, label, amp_shape = config
+    mf = result['mf']
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # Transmitted chirp
+    ax = axes[0, 0]
+    t_ms = np.arange(len(result['chirp'])) / DODOMIC_SAMPLE_RATE * 1000
+    ax.plot(t_ms, result['chirp'], 'b-', lw=0.5)
+    ax.set_xlabel('Time (ms)')
+    ax.set_ylabel('Amplitude')
+    ax.set_title(f'Transmitted Chirp: {label}')
+    ax.grid(True, alpha=0.3)
+
+    # Received signal (first 50 ms)
+    ax = axes[0, 1]
+    n50 = int(0.05 * DODOMIC_SAMPLE_RATE)
+    t_rx = np.arange(n50) / DODOMIC_SAMPLE_RATE * 1000
+    ax.plot(t_rx, result['received'][:n50], 'b-', lw=0.5)
+    ax.set_xlabel('Time (ms)')
+    ax.set_ylabel('Amplitude')
+    ax.set_title('Received Signal (first 50 ms)')
+    ax.grid(True, alpha=0.3)
+
+    # Matched filter output: 0–15 ms window showing incident + TOF peaks
+    ax = axes[1, 0]
+    mask = (mf['lags_us'] >= 0) & (mf['lags_us'] <= 15000)
+    ax.plot(mf['lags_us'][mask] / 1000, mf['xcorr'][mask],
+            'b-', lw=0.5, alpha=0.4, label='MF output')
+    ax.plot(mf['lags_us'][mask] / 1000, mf['xcorr_env'][mask],
+            'r-', lw=1.5, label='Envelope')
+    if mf['tof_us']:
+        ax.axvline(mf['tof_us'] / 1000, color='g', lw=1.5, ls='--',
+                   label=f"TOF = {mf['tof_us']:.0f} μs")
+    if mf['incident_us']:
+        ax.axvline(mf['incident_us'] / 1000, color='orange', lw=1, ls=':',
+                   label=f"Incident = {mf['incident_us']:.0f} μs")
+    ax.set_xlabel('Lag (ms)')
+    ax.set_ylabel('Normalised MF output')
+    ax.set_title('Matched Filter Output')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # Info panel
+    ax = axes[1, 1]
+    ax.axis('off')
+    theo = theoretical_fwhm_us(f_start, f_stop)
+    fwhm_s    = f"{mf['fwhm_us']:.0f} μs"    if mf['fwhm_us']    else 'N/A'
+    tof_s     = f"{mf['tof_us']:.0f} μs"     if mf['tof_us']     else 'N/A'
+    sl_s      = f"{mf['sidelobe_db']:.1f} dB" if mf['sidelobe_db'] else 'N/A'
+    tbp       = abs(f_stop - f_start) * dur_ms / 1000
+    info = (
+        f"CHIRP PARAMETERS\n{'='*32}\n"
+        f"  f_start:    {f_start/1000:.2f} kHz\n"
+        f"  f_stop:     {f_stop/1000:.2f} kHz\n"
+        f"  Bandwidth:  {abs(f_stop-f_start)/1000:.2f} kHz\n"
+        f"  Duration:   {dur_ms} ms\n"
+        f"  TBP:        {tbp:.0f}\n"
+        f"  Amplitude:  {amp_shape}\n\n"
+        f"THEORETICAL\n"
+        f"  FWHM:       {theo:.0f} μs\n\n"
+        f"MEASURED\n"
+        f"  FWHM:       {fwhm_s}\n"
+        f"  TOF:        {tof_s}\n"
+        f"  Sidelobe:   {sl_s}"
+    )
+    ax.text(0.05, 0.95, info, transform=ax.transAxes, fontsize=10,
+            va='top', family='monospace',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    fig.suptitle(f'LFM Chirp Matched Filter — {label}', fontsize=13, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def plot_sweep_summary(results, output_path):
+    flat_10 = [r for r in results if r['amp_shape'] == 'flat'
+               and r['duration_ms'] == 10]
+    flat_10.sort(key=lambda r: r['bw_hz'])
+
+    dur_sweep = [r for r in results if r['amp_shape'] == 'flat'
+                 and abs(r['bw_hz'] - 3750) < 300]
+    dur_sweep.sort(key=lambda r: r['duration_ms'])
+
+    comp_10 = [r for r in results if r['amp_shape'] == 'piezo_compensated'
+               and r['duration_ms'] == 10]
+    comp_10.sort(key=lambda r: r['bw_hz'])
+
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+
+    # Panel 1: FWHM vs bandwidth (10 ms)
+    ax = axes[0, 0]
+    bws   = [r['bw_hz'] / 1000 for r in flat_10]
+    theo  = [r['theo_fwhm_us'] for r in flat_10]
+    meas  = [r['mf']['fwhm_us'] or 0 for r in flat_10]
+    ax.plot(bws, theo, 'b^--', lw=1.5, ms=6, label='Theoretical 0.886/B')
+    ax.plot(bws, meas, 'bo-',  lw=2,   ms=8, label='Measured (flat)')
+    if comp_10:
+        comp_bws  = [r['bw_hz'] / 1000 for r in comp_10]
+        comp_meas = [r['mf']['fwhm_us'] or 0 for r in comp_10]
+        ax.plot(comp_bws, comp_meas, 'rs--', lw=1.5, ms=8, label='Measured (compensated)')
+    ax.axvline(1.7, color='orange', ls=':', alpha=0.7, label='−3 dB BW')
+    ax.axvline(3.75, color='red',   ls=':', alpha=0.7, label='−6 dB BW')
+    ax.set_xlabel('Chirp Bandwidth (kHz)')
+    ax.set_ylabel('FWHM (μs)')
+    ax.set_title('FWHM vs. Bandwidth (10 ms chirps)')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    # Panel 2: FWHM vs duration (3.75 kHz)
+    ax = axes[0, 1]
+    if len(dur_sweep) > 1:
+        durs      = [r['duration_ms'] for r in dur_sweep]
+        meas_d    = [r['mf']['fwhm_us'] or 0 for r in dur_sweep]
+        theo_val  = dur_sweep[0]['theo_fwhm_us']
+        ax.axhline(theo_val, color='b', ls='--', lw=1.5,
+                   label=f'Theoretical ({theo_val:.0f} μs)')
+        ax.plot(durs, meas_d, 'bo-', lw=2, ms=8, label='Measured')
+        ax.set_xlabel('Duration (ms)')
+        ax.set_ylabel('FWHM (μs)')
+        ax.set_title('FWHM vs. Duration (3.75 kHz chirp)')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    # Panel 3: TOF consistency
+    ax = axes[1, 0]
+    tof_data = [(r['label'], r['mf']['tof_us'])
+                for r in results if r['mf']['tof_us']]
+    if tof_data:
+        lbls, tofs = zip(*tof_data)
+        ax.bar(range(len(tofs)), tofs, color='steelblue', alpha=0.7)
+        ax.set_xticks(range(len(lbls)))
+        ax.set_xticklabels(lbls, rotation=45, ha='right', fontsize=7)
+        ax.axhline(np.mean(tofs), color='r', ls='--',
+                   label=f'Mean {np.mean(tofs):.0f} μs')
+        ax.set_ylabel('TOF (μs)')
+        ax.set_title('TOF Consistency Across Configurations')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3, axis='y')
+
+    # Panel 4: MF envelope overlay near TOF peak (10 ms flat)
+    ax = axes[1, 1]
+    colors = plt.cm.viridis(np.linspace(0, 1, len(flat_10)))
+    for i, r in enumerate(flat_10):
+        mf = r['mf']
+        if mf['tof_us'] is None:
+            continue
+        centre = mf['tof_us']
+        mask   = (mf['lags_us'] >= centre - 2000) & (mf['lags_us'] <= centre + 2000)
+        if np.any(mask):
+            ax.plot(mf['lags_us'][mask] - centre, mf['xcorr_env'][mask],
+                    color=colors[i], lw=1.5,
+                    label=f"{r['bw_hz']/1000:.1f} kHz")
+    ax.axhline(0.5, color='gray', ls='--', alpha=0.5, label='FWHM level')
+    ax.set_xlabel('Lag relative to TOF peak (μs)')
+    ax.set_ylabel('Normalised envelope')
+    ax.set_title('MF Envelope at TOF Peak (10 ms flat)')
+    ax.legend(fontsize=8, ncol=2)
+    ax.grid(True, alpha=0.3)
+
+    fig.suptitle('LFM Chirp Sweep Summary', fontsize=14, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    print('=' * 60)
+    print(f'LFM Chirp Sweep ({VERSION})')
+    print('=' * 60)
+
+    piezo_response = load_piezo_response()
+    if piezo_response is None:
+        print("Amplitude compensation unavailable — skipping 'piezo_compensated' configs.")
+
+    # Archiver setup
+    ts      = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_dir = os.path.join(OUTPUT_DIR, 'recordings', f'{ts}_chirp_sweep')
+    raw_dir = os.path.join(run_dir, 'raw')
+    plt_dir = os.path.join(run_dir, 'plots')
+    os.makedirs(raw_dir, exist_ok=True)
+    os.makedirs(plt_dir, exist_ok=True)
+
+    manifest = {
+        'timestamp':   datetime.now().isoformat(),
+        'version':     VERSION,
+        'description': 'lfm_chirp_sweep',
+        'hardware': {
+            'sdg':                f'SDG1062X @ {SDG_IP}',
+            'sdg_sample_rate_hz': SDG_SAMPLE_RATE,
+            'mic':                'Dodotronic UltraMic',
+            'mic_sample_rate_hz': DODOMIC_SAMPLE_RATE,
+        },
+        'measurements': {},
+    }
+
+    pa, mic_index = find_ultramic()
+    if pa is None:
+        return 1
+
+    results = []
+    sdg = None
+    try:
+        sdg = SDG1062X_LAN()
+        sdg.connect()
+        print(f'Device: {sdg.query("*IDN?")}')
+        sdg.set_arb_mode(channel=1)
+
+        for cfg in CHIRP_CONFIGS:
+            f_start, f_stop, dur_ms, label, amp_shape = cfg
+
+            if amp_shape == 'piezo_compensated' and piezo_response is None:
+                print(f'\nSkipping {label} (no piezo response data)')
+                continue
+
+            bw_hz = abs(f_stop - f_start)
+            print(f"\n{'='*55}")
+            print(f"  {label}")
+            print(f"  {f_start/1000:.2f}–{f_stop/1000:.2f} kHz  |  "
+                  f"BW={bw_hz/1000:.2f} kHz  |  {dur_ms} ms  |  {amp_shape}")
+            print(f"  Theoretical FWHM: {theoretical_fwhm_us(f_start, f_stop):.0f} μs  |  "
+                  f"TBP: {bw_hz * dur_ms / 1000:.0f}")
+
+            # Generate chirp at mic sample rate (used as matched-filter template)
+            _, chirp, _ = generate_lfm_chirp(
+                f_start, f_stop, dur_ms, DODOMIC_SAMPLE_RATE,
+                amp_shape, piezo_response)
+
+            # Build SDG buffer (resampled, zero-padded)
+            sdg_buf, rep_rate = create_sdg_buffer(chirp, dur_ms)
+            dead_ms = len(sdg_buf) / SDG_SAMPLE_RATE * 1000 - dur_ms
+            print(f"  SDG: {len(sdg_buf)} samples @ {rep_rate:.1f} Hz  "
+                  f"({dur_ms} ms chirp + {dead_ms:.1f} ms dead time)")
+
+            # Upload and record
+            wf_name = 'ch_' + label.replace('.', 'p').replace('-', 'm')[:15]
+            sdg.upload_waveform(wf_name, sdg_buf, rep_rate, ampl_vpp=2.0)
+            sdg.output_on()
+            time.sleep(0.3)
+            received = record_audio(pa, mic_index, RECORD_DURATION)
+            sdg.output_off()
+
+            # Matched filter
+            mf = matched_filter_analysis(received, chirp, f_start, f_stop)
+            fwhm_s = f"{mf['fwhm_us']:.0f} μs" if mf['fwhm_us'] else 'not found'
+            tof_s  = f"{mf['tof_us']:.0f} μs"  if mf['tof_us']  else 'not found'
+            print(f"  TOF:  {tof_s}    FWHM: {fwhm_s}")
+            if mf['sidelobe_db']:
+                print(f"  Sidelobe: {mf['sidelobe_db']:.1f} dB")
+
+            result = dict(
+                f_start=f_start, f_stop=f_stop, bw_hz=bw_hz,
+                duration_ms=dur_ms, label=label, amp_shape=amp_shape,
+                theo_fwhm_us=theoretical_fwhm_us(f_start, f_stop),
+                chirp=chirp, received=received, mf=mf,
+            )
+            results.append(result)
+
+            # Save WAV
+            safe = label.replace('.', 'p')
+            wav_path = os.path.join(raw_dir, f'{safe}_received.wav')
+            wavfile.write(wav_path, DODOMIC_SAMPLE_RATE,
+                          (received * 32767).astype(np.int16))
+
+            # Individual plot
+            plot_path = os.path.join(plt_dir, f'{safe}.png')
+            plot_chirp_result(result, cfg, plot_path)
+
+            manifest['measurements'][label] = {
+                'f_start_hz':    f_start,
+                'f_stop_hz':     f_stop,
+                'bandwidth_hz':  bw_hz,
+                'duration_ms':   dur_ms,
+                'amp_shape':     amp_shape,
+                'theo_fwhm_us':  theoretical_fwhm_us(f_start, f_stop),
+                'meas_fwhm_us':  mf['fwhm_us'],
+                'tof_us':        mf['tof_us'],
+                'sidelobe_db':   mf['sidelobe_db'],
+                'wav':           f'raw/{safe}_received.wav',
+                'plot':          f'plots/{safe}.png',
+            }
+            time.sleep(0.5)
+
+    except Exception as e:
+        import traceback
+        print(f'\nError: {e}')
+        traceback.print_exc()
+        return 1
+    finally:
+        if sdg:
+            sdg.output_off()
+            sdg.disconnect()
+        if pa:
+            pa.terminate()
+
+    # Summary plot and manifest
+    plot_sweep_summary(results, os.path.join(plt_dir, 'summary.png'))
+    with open(os.path.join(run_dir, 'manifest.json'), 'w') as f:
+        json.dump(manifest, f, indent=2, default=str)
+    print(f'\nResults in: {run_dir}')
+
+    # Console table
+    print(f"\n{'='*120}")
+    print(f"{'Label':<28} {'BW kHz':<8} {'ms':<5} {'Shape':<14} "
+          f"{'Theo μs':<9} {'TOF μs':<9} {'TOF FWHM':<10} {'Lag0 FWHM':<11} {'Ratio dB'}")
+    print('-' * 120)
+    for r in results:
+        mf     = r['mf']
+        tof_s  = f"{mf['tof_us']:.1f}"         if mf['tof_us']        else 'N/A'
+        fwhm_s = f"{mf['fwhm_us']:.0f}"        if mf['fwhm_us']       else 'N/A'
+        lag0_s = f"{mf['lag0_fwhm_us']:.0f}"   if mf.get('lag0_fwhm_us') else 'N/A'
+        rat_s  = f"{mf['ratio_db']:.1f}"       if mf.get('ratio_db')  else 'N/A'
+        print(f"{r['label']:<28} {r['bw_hz']/1000:<8.2f} {r['duration_ms']:<5} "
+              f"{r['amp_shape']:<14} {r['theo_fwhm_us']:<9.0f} "
+              f"{tof_s:<9} {fwhm_s:<10} {lag0_s:<11} {rat_s}")
+    print('\nDone!')
+    return 0
+
+
+if __name__ == '__main__':
+    exit(main())

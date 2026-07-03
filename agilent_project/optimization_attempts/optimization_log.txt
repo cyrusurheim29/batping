@@ -1,0 +1,448 @@
+============================================================
+BATPING Full Waveform Tangent Optimization
+============================================================
+Time: 2026-05-27 11:27:26
+
+WARNING: This will take ~7 minutes per iteration!
+State is saved after each iteration for resumability.
+
+Connecting to Agilent 33220A...
+Connected: Agilent Technologies,33220A,MY44009448,2.07-2.00-22-2
+Initializing audio...
+Found UltraMic at index 1
+
+============================================================
+Full Waveform Tangent Optimization
+============================================================
+Input samples: 4000
+Output samples: 9600
+Parameters: ε=0.05, λ=0.01, α=0.5
+Target σ: 1.5 cycles
+Input subsample: every 10th sample
+Measurements per iteration: 401
+Estimated time per iteration: ~6.7 min
+
+============================================================
+ITERATION 1/10
+============================================================
+  Measuring current output...
+  Peak at sample 710 (1.85 ms)
+  Peak amplitude: 1.3256
+  Error (RMSE): 0.480556
+  Estimating Jacobian (4000 perturbations)...
+    Subsampled Jacobian: 960 x 400 = 384,000 elements
+    Perturbing every 10th sample (400 measurements)
+    Jacobian: 20/400 (5.0%) - 0.9 meas/s - ETA: 7.0 min
+    Jacobian: 40/400 (10.0%) - 0.9 meas/s - ETA: 6.6 min
+    Jacobian: 60/400 (15.0%) - 0.9 meas/s - ETA: 6.3 min
+    Jacobian: 80/400 (20.0%) - 0.9 meas/s - ETA: 5.9 min
+    Jacobian: 100/400 (25.0%) - 0.9 meas/s - ETA: 5.6 min
+    Jacobian: 120/400 (30.0%) - 0.9 meas/s - ETA: 5.2 min
+    Jacobian: 140/400 (35.0%) - 0.9 meas/s - ETA: 4.8 min
+    Jacobian: 160/400 (40.0%) - 0.9 meas/s - ETA: 4.5 min
+    Jacobian: 180/400 (45.0%) - 0.9 meas/s - ETA: 4.1 min
+    Jacobian: 200/400 (50.0%) - 0.9 meas/s - ETA: 3.7 min
+    Jacobian: 220/400 (55.0%) - 0.9 meas/s - ETA: 3.3 min
+    Jacobian: 240/400 (60.0%) - 0.9 meas/s - ETA: 3.0 min
+    Jacobian: 260/400 (65.0%) - 0.9 meas/s - ETA: 2.6 min
+    Jacobian: 280/400 (70.0%) - 0.9 meas/s - ETA: 2.2 min
+    Jacobian: 300/400 (75.0%) - 0.9 meas/s - ETA: 1.9 min
+    Jacobian: 320/400 (80.0%) - 0.9 meas/s - ETA: 1.5 min
+    Jacobian: 340/400 (85.0%) - 0.9 meas/s - ETA: 1.1 min
+    Jacobian: 360/400 (90.0%) - 0.9 meas/s - ETA: 0.7 min
+    Jacobian: 380/400 (95.0%) - 0.9 meas/s - ETA: 0.4 min
+    Jacobian: 400/400 (100.0%) - 0.9 meas/s - ETA: 0.0 min
+    Interpolating to full 960x4000 Jacobian...
+  Computing correction...
+    Computing K^T @ K (4000x4000)...
+    K^T @ K done in 0.2s
+    Computing K^T @ error...
+    Solving 4000x4000 linear system...
+    Solve done in 0.8s
+  Correction norm: 1.5389
+  Correction max: 0.1814
+  State saved to optimizer_state.npz
+  Iteration time: 7.5 min
+
+============================================================
+ITERATION 2/10
+============================================================
+  Measuring current output...
+  Peak at sample 545 (1.42 ms)
+  Peak amplitude: 1.3151
+  Error (RMSE): 0.482563
+  Estimating Jacobian (4000 perturbations)...
+    Subsampled Jacobian: 960 x 400 = 384,000 elements
+    Perturbing every 10th sample (400 measurements)
+    Jacobian: 20/400 (5.0%) - 0.9 meas/s - ETA: 7.3 min
+    Jacobian: 40/400 (10.0%) - 0.9 meas/s - ETA: 6.9 min
+    Jacobian: 60/400 (15.0%) - 0.9 meas/s - ETA: 6.5 min
+    Jacobian: 80/400 (20.0%) - 0.9 meas/s - ETA: 6.1 min
+    Jacobian: 100/400 (25.0%) - 0.9 meas/s - ETA: 5.7 min
+    Jacobian: 120/400 (30.0%) - 0.9 meas/s - ETA: 5.3 min
+    Jacobian: 140/400 (35.0%) - 0.9 meas/s - ETA: 5.0 min
+    Jacobian: 160/400 (40.0%) - 0.9 meas/s - ETA: 4.6 min
+    Jacobian: 180/400 (45.0%) - 0.9 meas/s - ETA: 4.2 min
+    Jacobian: 200/400 (50.0%) - 0.9 meas/s - ETA: 3.8 min
+    Jacobian: 220/400 (55.0%) - 0.9 meas/s - ETA: 3.4 min
+    Jacobian: 240/400 (60.0%) - 0.9 meas/s - ETA: 3.1 min
+    Jacobian: 260/400 (65.0%) - 0.9 meas/s - ETA: 2.7 min
+    Jacobian: 280/400 (70.0%) - 0.9 meas/s - ETA: 2.3 min
+    Jacobian: 300/400 (75.0%) - 0.9 meas/s - ETA: 1.9 min
+    Jacobian: 320/400 (80.0%) - 0.9 meas/s - ETA: 1.5 min
+    Jacobian: 340/400 (85.0%) - 0.9 meas/s - ETA: 1.1 min
+    Jacobian: 360/400 (90.0%) - 0.9 meas/s - ETA: 0.8 min
+    Jacobian: 380/400 (95.0%) - 0.9 meas/s - ETA: 0.4 min
+    Jacobian: 400/400 (100.0%) - 0.9 meas/s - ETA: 0.0 min
+    Interpolating to full 960x4000 Jacobian...
+  Computing correction...
+    Computing K^T @ K (4000x4000)...
+    K^T @ K done in 0.2s
+    Computing K^T @ error...
+    Solving 4000x4000 linear system...
+    Solve done in 1.0s
+  Correction norm: 0.8513
+  Correction max: 0.0735
+  State saved to optimizer_state.npz
+  Iteration time: 7.7 min
+
+============================================================
+ITERATION 3/10
+============================================================
+  Measuring current output...
+  Peak at sample 232 (0.60 ms)
+  Peak amplitude: 1.3061
+  Error (RMSE): 0.435156
+  Estimating Jacobian (4000 perturbations)...
+    Subsampled Jacobian: 960 x 400 = 384,000 elements
+    Perturbing every 10th sample (400 measurements)
+    Jacobian: 20/400 (5.0%) - 0.9 meas/s - ETA: 7.2 min
+    Jacobian: 40/400 (10.0%) - 0.9 meas/s - ETA: 6.8 min
+    Jacobian: 60/400 (15.0%) - 0.9 meas/s - ETA: 6.4 min
+    Jacobian: 80/400 (20.0%) - 0.9 meas/s - ETA: 6.1 min
+    Jacobian: 100/400 (25.0%) - 0.9 meas/s - ETA: 5.7 min
+    Jacobian: 120/400 (30.0%) - 0.9 meas/s - ETA: 5.3 min
+    Jacobian: 140/400 (35.0%) - 0.9 meas/s - ETA: 4.9 min
+    Jacobian: 160/400 (40.0%) - 0.9 meas/s - ETA: 4.6 min
+    Jacobian: 180/400 (45.0%) - 0.9 meas/s - ETA: 4.2 min
+    Jacobian: 200/400 (50.0%) - 0.9 meas/s - ETA: 3.8 min
+    Jacobian: 220/400 (55.0%) - 0.9 meas/s - ETA: 3.4 min
+    Jacobian: 240/400 (60.0%) - 0.9 meas/s - ETA: 3.0 min
+    Jacobian: 260/400 (65.0%) - 0.9 meas/s - ETA: 2.6 min
+    Jacobian: 280/400 (70.0%) - 0.9 meas/s - ETA: 2.3 min
+    Jacobian: 300/400 (75.0%) - 0.9 meas/s - ETA: 1.9 min
+    Jacobian: 320/400 (80.0%) - 0.9 meas/s - ETA: 1.5 min
+    Jacobian: 340/400 (85.0%) - 0.9 meas/s - ETA: 1.1 min
+    Jacobian: 360/400 (90.0%) - 0.9 meas/s - ETA: 0.8 min
+    Jacobian: 380/400 (95.0%) - 0.9 meas/s - ETA: 0.4 min
+    Jacobian: 400/400 (100.0%) - 0.9 meas/s - ETA: 0.0 min
+    Interpolating to full 960x4000 Jacobian...
+  Computing correction...
+    Computing K^T @ K (4000x4000)...
+    K^T @ K done in 0.2s
+    Computing K^T @ error...
+    Solving 4000x4000 linear system...
+    Solve done in 1.0s
+  Correction norm: 0.5793
+  Correction max: 0.0647
+  State saved to optimizer_state.npz
+  Iteration time: 7.6 min
+
+============================================================
+ITERATION 4/10
+============================================================
+  Measuring current output...
+  Peak at sample 656 (1.71 ms)
+  Peak amplitude: 1.3133
+  Error (RMSE): 0.430512
+  Estimating Jacobian (4000 perturbations)...
+    Subsampled Jacobian: 960 x 400 = 384,000 elements
+    Perturbing every 10th sample (400 measurements)
+    Jacobian: 20/400 (5.0%) - 0.9 meas/s - ETA: 7.2 min
+    Jacobian: 40/400 (10.0%) - 0.9 meas/s - ETA: 6.8 min
+    Jacobian: 60/400 (15.0%) - 0.9 meas/s - ETA: 6.5 min
+    Jacobian: 80/400 (20.0%) - 0.9 meas/s - ETA: 6.1 min
+    Jacobian: 100/400 (25.0%) - 0.9 meas/s - ETA: 5.7 min
+    Jacobian: 120/400 (30.0%) - 0.9 meas/s - ETA: 5.3 min
+    Jacobian: 140/400 (35.0%) - 0.9 meas/s - ETA: 4.9 min
+    Jacobian: 160/400 (40.0%) - 0.9 meas/s - ETA: 4.6 min
+    Jacobian: 180/400 (45.0%) - 0.9 meas/s - ETA: 4.2 min
+    Jacobian: 200/400 (50.0%) - 0.9 meas/s - ETA: 3.8 min
+    Jacobian: 220/400 (55.0%) - 0.9 meas/s - ETA: 3.4 min
+    Jacobian: 240/400 (60.0%) - 0.9 meas/s - ETA: 3.0 min
+    Jacobian: 260/400 (65.0%) - 0.9 meas/s - ETA: 2.7 min
+    Jacobian: 280/400 (70.0%) - 0.9 meas/s - ETA: 2.3 min
+    Jacobian: 300/400 (75.0%) - 0.9 meas/s - ETA: 1.9 min
+    Jacobian: 320/400 (80.0%) - 0.9 meas/s - ETA: 1.5 min
+    Jacobian: 340/400 (85.0%) - 0.9 meas/s - ETA: 1.1 min
+    Jacobian: 360/400 (90.0%) - 0.9 meas/s - ETA: 0.8 min
+    Jacobian: 380/400 (95.0%) - 0.9 meas/s - ETA: 0.4 min
+    Jacobian: 400/400 (100.0%) - 0.9 meas/s - ETA: 0.0 min
+    Interpolating to full 960x4000 Jacobian...
+  Computing correction...
+    Computing K^T @ K (4000x4000)...
+    K^T @ K done in 0.3s
+    Computing K^T @ error...
+    Solving 4000x4000 linear system...
+    Solve done in 1.2s
+  Correction norm: 1.1052
+  Correction max: 0.1096
+  State saved to optimizer_state.npz
+  Iteration time: 7.7 min
+
+============================================================
+ITERATION 5/10
+============================================================
+  Measuring current output...
+  Peak at sample 282 (0.73 ms)
+  Peak amplitude: 1.3270
+  Error (RMSE): 0.492897
+  Estimating Jacobian (4000 perturbations)...
+    Subsampled Jacobian: 960 x 400 = 384,000 elements
+    Perturbing every 10th sample (400 measurements)
+    Jacobian: 20/400 (5.0%) - 0.9 meas/s - ETA: 7.2 min
+    Jacobian: 40/400 (10.0%) - 0.9 meas/s - ETA: 6.9 min
+    Jacobian: 60/400 (15.0%) - 0.9 meas/s - ETA: 6.5 min
+    Jacobian: 80/400 (20.0%) - 0.9 meas/s - ETA: 6.1 min
+    Jacobian: 100/400 (25.0%) - 0.9 meas/s - ETA: 5.7 min
+    Jacobian: 120/400 (30.0%) - 0.9 meas/s - ETA: 5.3 min
+    Jacobian: 140/400 (35.0%) - 0.9 meas/s - ETA: 5.0 min
+    Jacobian: 160/400 (40.0%) - 0.9 meas/s - ETA: 4.6 min
+    Jacobian: 180/400 (45.0%) - 0.9 meas/s - ETA: 4.2 min
+    Jacobian: 200/400 (50.0%) - 0.9 meas/s - ETA: 3.8 min
+    Jacobian: 220/400 (55.0%) - 0.9 meas/s - ETA: 3.4 min
+    Jacobian: 240/400 (60.0%) - 0.9 meas/s - ETA: 3.1 min
+    Jacobian: 260/400 (65.0%) - 0.9 meas/s - ETA: 2.7 min
+    Jacobian: 280/400 (70.0%) - 0.9 meas/s - ETA: 2.3 min
+    Jacobian: 300/400 (75.0%) - 0.9 meas/s - ETA: 1.9 min
+    Jacobian: 320/400 (80.0%) - 0.9 meas/s - ETA: 1.5 min
+    Jacobian: 340/400 (85.0%) - 0.9 meas/s - ETA: 1.1 min
+    Jacobian: 360/400 (90.0%) - 0.9 meas/s - ETA: 0.8 min
+    Jacobian: 380/400 (95.0%) - 0.9 meas/s - ETA: 0.4 min
+    Jacobian: 400/400 (100.0%) - 0.9 meas/s - ETA: 0.0 min
+    Interpolating to full 960x4000 Jacobian...
+  Computing correction...
+    Computing K^T @ K (4000x4000)...
+    K^T @ K done in 0.2s
+    Computing K^T @ error...
+    Solving 4000x4000 linear system...
+    Solve done in 0.6s
+  Correction norm: 0.8004
+  Correction max: 0.0768
+  State saved to optimizer_state.npz
+  Iteration time: 7.7 min
+
+============================================================
+ITERATION 6/10
+============================================================
+  Measuring current output...
+  Peak at sample 835 (2.17 ms)
+  Peak amplitude: 1.3101
+  Error (RMSE): 0.390159
+  Estimating Jacobian (4000 perturbations)...
+    Subsampled Jacobian: 960 x 400 = 384,000 elements
+    Perturbing every 10th sample (400 measurements)
+    Jacobian: 20/400 (5.0%) - 0.9 meas/s - ETA: 7.2 min
+    Jacobian: 40/400 (10.0%) - 0.9 meas/s - ETA: 6.8 min
+    Jacobian: 60/400 (15.0%) - 0.9 meas/s - ETA: 6.5 min
+    Jacobian: 80/400 (20.0%) - 0.9 meas/s - ETA: 6.1 min
+    Jacobian: 100/400 (25.0%) - 0.9 meas/s - ETA: 5.7 min
+    Jacobian: 120/400 (30.0%) - 0.9 meas/s - ETA: 5.3 min
+    Jacobian: 140/400 (35.0%) - 0.9 meas/s - ETA: 4.9 min
+    Jacobian: 160/400 (40.0%) - 0.9 meas/s - ETA: 4.6 min
+    Jacobian: 180/400 (45.0%) - 0.9 meas/s - ETA: 4.2 min
+    Jacobian: 200/400 (50.0%) - 0.9 meas/s - ETA: 3.8 min
+    Jacobian: 220/400 (55.0%) - 0.9 meas/s - ETA: 3.4 min
+    Jacobian: 240/400 (60.0%) - 0.9 meas/s - ETA: 3.0 min
+    Jacobian: 260/400 (65.0%) - 0.9 meas/s - ETA: 2.7 min
+    Jacobian: 280/400 (70.0%) - 0.9 meas/s - ETA: 2.3 min
+    Jacobian: 300/400 (75.0%) - 0.9 meas/s - ETA: 1.9 min
+    Jacobian: 320/400 (80.0%) - 0.9 meas/s - ETA: 1.5 min
+    Jacobian: 340/400 (85.0%) - 0.9 meas/s - ETA: 1.1 min
+    Jacobian: 360/400 (90.0%) - 0.9 meas/s - ETA: 0.8 min
+    Jacobian: 380/400 (95.0%) - 0.9 meas/s - ETA: 0.4 min
+    Jacobian: 400/400 (100.0%) - 0.9 meas/s - ETA: 0.0 min
+    Interpolating to full 960x4000 Jacobian...
+  Computing correction...
+    Computing K^T @ K (4000x4000)...
+    K^T @ K done in 0.2s
+    Computing K^T @ error...
+    Solving 4000x4000 linear system...
+    Solve done in 0.9s
+  Correction norm: 0.8239
+  Correction max: 0.0954
+  State saved to optimizer_state.npz
+  Iteration time: 7.7 min
+
+============================================================
+ITERATION 7/10
+============================================================
+  Measuring current output...
+  Peak at sample 832 (2.17 ms)
+  Peak amplitude: 1.3091
+  Error (RMSE): 0.483128
+  Estimating Jacobian (4000 perturbations)...
+    Subsampled Jacobian: 960 x 400 = 384,000 elements
+    Perturbing every 10th sample (400 measurements)
+    Jacobian: 20/400 (5.0%) - 0.9 meas/s - ETA: 7.2 min
+    Jacobian: 40/400 (10.0%) - 0.9 meas/s - ETA: 6.9 min
+    Jacobian: 60/400 (15.0%) - 0.9 meas/s - ETA: 6.5 min
+    Jacobian: 80/400 (20.0%) - 0.9 meas/s - ETA: 6.1 min
+    Jacobian: 100/400 (25.0%) - 0.9 meas/s - ETA: 5.7 min
+    Jacobian: 120/400 (30.0%) - 0.9 meas/s - ETA: 5.3 min
+    Jacobian: 140/400 (35.0%) - 0.9 meas/s - ETA: 5.0 min
+    Jacobian: 160/400 (40.0%) - 0.9 meas/s - ETA: 4.6 min
+    Jacobian: 180/400 (45.0%) - 0.9 meas/s - ETA: 4.2 min
+    Jacobian: 200/400 (50.0%) - 0.9 meas/s - ETA: 3.8 min
+    Jacobian: 220/400 (55.0%) - 0.9 meas/s - ETA: 3.4 min
+    Jacobian: 240/400 (60.0%) - 0.9 meas/s - ETA: 3.0 min
+    Jacobian: 260/400 (65.0%) - 0.9 meas/s - ETA: 2.7 min
+    Jacobian: 280/400 (70.0%) - 0.9 meas/s - ETA: 2.3 min
+    Jacobian: 300/400 (75.0%) - 0.9 meas/s - ETA: 1.9 min
+    Jacobian: 320/400 (80.0%) - 0.9 meas/s - ETA: 1.5 min
+    Jacobian: 340/400 (85.0%) - 0.9 meas/s - ETA: 1.1 min
+    Jacobian: 360/400 (90.0%) - 0.9 meas/s - ETA: 0.8 min
+    Jacobian: 380/400 (95.0%) - 0.9 meas/s - ETA: 0.4 min
+    Jacobian: 400/400 (100.0%) - 0.9 meas/s - ETA: 0.0 min
+    Interpolating to full 960x4000 Jacobian...
+  Computing correction...
+    Computing K^T @ K (4000x4000)...
+    K^T @ K done in 0.2s
+    Computing K^T @ error...
+    Solving 4000x4000 linear system...
+    Solve done in 0.8s
+  Correction norm: 0.8942
+  Correction max: 0.1691
+  State saved to optimizer_state.npz
+  Iteration time: 7.6 min
+
+============================================================
+ITERATION 8/10
+============================================================
+  Measuring current output...
+  Peak at sample 340 (0.89 ms)
+  Peak amplitude: 1.3233
+  Error (RMSE): 0.408291
+  Estimating Jacobian (4000 perturbations)...
+    Subsampled Jacobian: 960 x 400 = 384,000 elements
+    Perturbing every 10th sample (400 measurements)
+    Jacobian: 20/400 (5.0%) - 0.9 meas/s - ETA: 7.1 min
+    Jacobian: 40/400 (10.0%) - 0.9 meas/s - ETA: 6.8 min
+    Jacobian: 60/400 (15.0%) - 0.9 meas/s - ETA: 6.4 min
+    Jacobian: 80/400 (20.0%) - 0.9 meas/s - ETA: 6.0 min
+    Jacobian: 100/400 (25.0%) - 0.9 meas/s - ETA: 5.6 min
+    Jacobian: 120/400 (30.0%) - 0.9 meas/s - ETA: 5.3 min
+    Jacobian: 140/400 (35.0%) - 0.9 meas/s - ETA: 4.9 min
+    Jacobian: 160/400 (40.0%) - 0.9 meas/s - ETA: 4.5 min
+    Jacobian: 180/400 (45.0%) - 0.9 meas/s - ETA: 4.1 min
+    Jacobian: 200/400 (50.0%) - 0.9 meas/s - ETA: 3.8 min
+    Jacobian: 220/400 (55.0%) - 0.9 meas/s - ETA: 3.4 min
+    Jacobian: 240/400 (60.0%) - 0.9 meas/s - ETA: 3.0 min
+    Jacobian: 260/400 (65.0%) - 0.9 meas/s - ETA: 2.6 min
+    Jacobian: 280/400 (70.0%) - 0.9 meas/s - ETA: 2.3 min
+    Jacobian: 300/400 (75.0%) - 0.9 meas/s - ETA: 1.9 min
+    Jacobian: 320/400 (80.0%) - 0.9 meas/s - ETA: 1.5 min
+    Jacobian: 340/400 (85.0%) - 0.9 meas/s - ETA: 1.1 min
+    Jacobian: 360/400 (90.0%) - 0.9 meas/s - ETA: 0.8 min
+    Jacobian: 380/400 (95.0%) - 0.9 meas/s - ETA: 0.4 min
+    Jacobian: 400/400 (100.0%) - 0.9 meas/s - ETA: 0.0 min
+    Interpolating to full 960x4000 Jacobian...
+  Computing correction...
+    Computing K^T @ K (4000x4000)...
+    K^T @ K done in 0.2s
+    Computing K^T @ error...
+    Solving 4000x4000 linear system...
+    Solve done in 0.6s
+  Correction norm: 0.6678
+  Correction max: 0.0647
+  State saved to optimizer_state.npz
+  Iteration time: 7.6 min
+
+============================================================
+ITERATION 9/10
+============================================================
+  Measuring current output...
+  Peak at sample 111 (0.29 ms)
+  Peak amplitude: 1.3236
+  Error (RMSE): 0.489757
+  Estimating Jacobian (4000 perturbations)...
+    Subsampled Jacobian: 960 x 400 = 384,000 elements
+    Perturbing every 10th sample (400 measurements)
+    Jacobian: 20/400 (5.0%) - 0.9 meas/s - ETA: 7.3 min
+    Jacobian: 40/400 (10.0%) - 0.9 meas/s - ETA: 6.9 min
+    Jacobian: 60/400 (15.0%) - 0.9 meas/s - ETA: 6.5 min
+    Jacobian: 80/400 (20.0%) - 0.9 meas/s - ETA: 6.1 min
+    Jacobian: 100/400 (25.0%) - 0.9 meas/s - ETA: 5.8 min
+    Jacobian: 120/400 (30.0%) - 0.9 meas/s - ETA: 5.4 min
+    Jacobian: 140/400 (35.0%) - 0.9 meas/s - ETA: 5.0 min
+    Jacobian: 160/400 (40.0%) - 0.9 meas/s - ETA: 4.6 min
+    Jacobian: 180/400 (45.0%) - 0.9 meas/s - ETA: 4.2 min
+    Jacobian: 200/400 (50.0%) - 0.9 meas/s - ETA: 3.8 min
+    Jacobian: 220/400 (55.0%) - 0.9 meas/s - ETA: 3.5 min
+    Jacobian: 240/400 (60.0%) - 0.9 meas/s - ETA: 3.1 min
+    Jacobian: 260/400 (65.0%) - 0.9 meas/s - ETA: 2.7 min
+    Jacobian: 280/400 (70.0%) - 0.9 meas/s - ETA: 2.3 min
+    Jacobian: 300/400 (75.0%) - 0.9 meas/s - ETA: 1.9 min
+    Jacobian: 320/400 (80.0%) - 0.9 meas/s - ETA: 1.5 min
+    Jacobian: 340/400 (85.0%) - 0.9 meas/s - ETA: 1.1 min
+    Jacobian: 360/400 (90.0%) - 0.9 meas/s - ETA: 0.8 min
+    Jacobian: 380/400 (95.0%) - 0.9 meas/s - ETA: 0.4 min
+    Jacobian: 400/400 (100.0%) - 0.9 meas/s - ETA: 0.0 min
+    Interpolating to full 960x4000 Jacobian...
+  Computing correction...
+    Computing K^T @ K (4000x4000)...
+    K^T @ K done in 0.2s
+    Computing K^T @ error...
+    Solving 4000x4000 linear system...
+    Solve done in 0.5s
+  Correction norm: 0.8513
+  Correction max: 0.0824
+  State saved to optimizer_state.npz
+  Iteration time: 7.7 min
+
+============================================================
+ITERATION 10/10
+============================================================
+  Measuring current output...
+  Peak at sample 432 (1.12 ms)
+  Peak amplitude: 1.3307
+  Error (RMSE): 0.437460
+  Estimating Jacobian (4000 perturbations)...
+    Subsampled Jacobian: 960 x 400 = 384,000 elements
+    Perturbing every 10th sample (400 measurements)
+    Jacobian: 20/400 (5.0%) - 0.9 meas/s - ETA: 7.2 min
+    Jacobian: 40/400 (10.0%) - 0.9 meas/s - ETA: 6.8 min
+    Jacobian: 60/400 (15.0%) - 0.9 meas/s - ETA: 6.4 min
+    Jacobian: 80/400 (20.0%) - 0.9 meas/s - ETA: 6.1 min
+    Jacobian: 100/400 (25.0%) - 0.9 meas/s - ETA: 5.8 min
+    Jacobian: 120/400 (30.0%) - 0.9 meas/s - ETA: 5.4 min
+    Jacobian: 140/400 (35.0%) - 0.9 meas/s - ETA: 5.0 min
+    Jacobian: 160/400 (40.0%) - 0.9 meas/s - ETA: 4.6 min
+    Jacobian: 180/400 (45.0%) - 0.9 meas/s - ETA: 4.2 min
+    Jacobian: 200/400 (50.0%) - 0.9 meas/s - ETA: 3.8 min
+    Jacobian: 220/400 (55.0%) - 0.9 meas/s - ETA: 3.5 min
+    Jacobian: 240/400 (60.0%) - 0.9 meas/s - ETA: 3.1 min
+    Jacobian: 260/400 (65.0%) - 0.9 meas/s - ETA: 2.7 min
+    Jacobian: 280/400 (70.0%) - 0.9 meas/s - ETA: 2.3 min
+    Jacobian: 300/400 (75.0%) - 0.9 meas/s - ETA: 1.9 min
+    Jacobian: 320/400 (80.0%) - 0.9 meas/s - ETA: 1.5 min
+    Jacobian: 340/400 (85.0%) - 0.9 meas/s - ETA: 1.1 min
+    Jacobian: 360/400 (90.0%) - 0.9 meas/s - ETA: 0.8 min
+    Jacobian: 380/400 (95.0%) - 0.9 meas/s - ETA: 0.4 min
+    Jacobian: 400/400 (100.0%) - 0.9 meas/s - ETA: 0.0 min
+    Interpolating to full 960x4000 Jacobian...
+  Computing correction...
+    Computing K^T @ K (4000x4000)...
+    K^T @ K done in 0.4s
+    Computing K^T @ error...
+    Solving 4000x4000 linear system...
+    Solve done in 1.6s
+  Correction norm: 0.8949
+  Correction max: 0.0818
+  State saved to optimizer_state.npz
+  Iteration time: 7.7 min
+
+Saved optimized waveform to optimized_waveform_full.npy
+Saved: full_waveform_results.png
+
+Optimization complete.

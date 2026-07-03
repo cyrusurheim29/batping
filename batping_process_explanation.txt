@@ -1,0 +1,186 @@
+BATPING PULSE OPTIMIZATION - PROCESS EXPLANATION
+================================================
+
+OVERVIEW
+--------
+BATPING is an acoustic temperature measurement system that uses ultrasonic
+time-of-flight measurements. The speed of sound depends on air temperature,
+so by precisely measuring how long an ultrasonic pulse takes to travel a
+known distance, we can infer the air temperature.
+
+For accurate time-of-flight measurements, we need pulses that are:
+  1. High amplitude (strong signal, good SNR)
+  2. Narrow width (precise timing)
+
+The challenge: piezoelectric transducers have nonlinear, resonant behavior
+that "smears" pulses in time. This project aims to optimize the electrical
+input waveform to compensate for this and produce cleaner output pulses.
+
+
+THE PHYSICAL SYSTEM
+-------------------
+
+    Computer                WaveStation 2052              Piezo Transducer
+    --------                ----------------              ----------------
+   | Python |  -- USB -->  | Waveform Gen  | -- Coax --> | 40 kHz Array |
+   | Script |              | (electrical)  |             | (acoustic)   |
+    --------                ----------------              ----------------
+                                                                |
+                                                                | Sound wave
+                                                                | (~23.5 cm)
+                                                                v
+    Computer                  Ultramic                    Air/Environment
+    --------                  --------
+   | Python | <-- USB ---   | 384 kHz  | <-- Acoustic -- (picks up sound)
+   | Script |               | Mic      |
+    --------                 --------
+
+
+THE OPTIMIZATION PROBLEM
+------------------------
+When you send a simple electrical pulse to a piezo transducer, the acoustic
+output doesn't look like a clean pulse. Instead:
+
+  Electrical Input:          Acoustic Output:
+
+       ___                        __/\__
+      |   |                     _/      \_
+  ____|   |____             __/           \__/\__/\_
+                                              (ringing)
+
+The transducer has mechanical inertia, so:
+  - It takes time to "spin up" to full amplitude
+  - It continues ringing after the drive signal stops
+
+This makes timing measurements imprecise because it's hard to identify
+exactly when the pulse "arrived."
+
+GOAL: Find an input waveform that, when filtered through the transducer's
+response, produces a sharp, symmetric output pulse.
+
+
+OPTIMIZATION APPROACH
+---------------------
+1. PARAMETERIZE THE WAVEFORM
+   Instead of optimizing every sample (1024 parameters = chaos), we
+   represent the pulse envelope using Fourier coefficients:
+
+     envelope(t) = a0 + a1*cos(2*pi*t) + b1*sin(2*pi*t) + a2*cos(4*pi*t) + ...
+
+   With ~8-10 coefficients, we can represent smooth envelope shapes.
+   The actual waveform is: envelope(t) * sin(2*pi*40000*t)
+
+2. MEASURE THE RESPONSE
+   - Send waveform to transducer via WaveStation
+   - Record acoustic output with Ultramic
+   - Extract metrics:
+     * Peak amplitude (higher = better)
+     * Pulse width at half-maximum (narrower = better)
+
+3. COMPUTE OBJECTIVE FUNCTION
+   score = amplitude_weight * peak_amplitude - width_weight * (width / 100)
+
+   We maximize amplitude and minimize width.
+
+4. UPDATE PARAMETERS
+   Use derivative-free optimization (Nelder-Mead, Powell, or differential
+   evolution) because we can't compute gradients through physical hardware.
+
+5. REPEAT
+   Each iteration: generate waveform -> send -> record -> analyze -> update
+   Continue until convergence or max iterations.
+
+
+TIME GATING
+-----------
+A critical challenge is separating the desired acoustic signal from noise:
+
+  t=0                                              t=30ms
+   |                                                 |
+   v                                                 v
+  [EM spike]  [silence]  [33kHz interference]  [acoustic signal]  [reverb]
+
+The EM spike is electromagnetic coupling - when the transducer is driven,
+some energy couples directly to the microphone at the speed of light (t≈0).
+The acoustic signal travels at the speed of sound (~343 m/s), arriving later.
+
+TIME GATING isolates the acoustic signal by only analyzing samples within
+an expected arrival window:
+
+  Time gate: [28ms -------- 45ms]
+                    ^^^^^^^
+                    Only analyze this region
+
+This rejects:
+  - EM coupling at t≈0
+  - Continuous interference (33 kHz motion sensors)
+  - Later reverberations
+
+
+CURRENT STATUS
+--------------
+WORKING:
+  - WaveStation communication (USB/SCPI)
+  - Basic waveform output (continuous sine waves)
+  - Ultramic recording at 384 kHz
+  - Time gate filtering
+  - Pulse analysis (envelope, width, amplitude)
+  - Optimization framework
+
+NOT WORKING:
+  - Arbitrary waveform upload to WaveStation
+  - The device isn't playing our custom waveforms
+  - Without this, we can't test different pulse shapes
+
+NEXT STEPS:
+  1. Debug ARB waveform upload (check manual for correct syntax)
+  2. Or use burst mode (gated sine) as alternative
+  3. Once waveforms work, optimization is ready to run
+
+
+FILE STRUCTURE
+--------------
+/Claude_Dir/
+├── wavestation.py           # WaveStation 2052 interface
+│   - WaveStation class      # USB connection, SCPI commands
+│   - generate_gaussian_pulse()
+│   - generate_chirp()
+│   - generate_shaped_pulse()
+│
+├── pulse_optimizer.py       # Main optimization system
+│   - UltramicRecorder       # Audio capture from Ultramic
+│   - TimeGate               # Time-based signal isolation
+│   - PulseMetrics           # Measured pulse characteristics
+│   - analyze_pulse()        # Extract metrics from recording
+│   - PulseOptimizer         # Orchestrates optimization loop
+│   - plot_recording_with_gate()
+│   - plot_optimization_history()
+│
+├── batping_optimization_status.md   # Current status summary
+├── batping_process_explanation.txt  # This file
+│
+└── batping/                 # Earlier work (frequency characterization)
+    ├── analyze_signal.py
+    ├── WORKLOG.md
+    └── [data files]
+
+
+USAGE (once ARB is fixed)
+-------------------------
+# Basic test
+python pulse_optimizer.py --distance 0.235 --plot-recording --baseline-only
+
+# Full optimization
+python pulse_optimizer.py --distance 0.235 --optimize --max-iter 50
+
+# Manual time gate
+python pulse_optimizer.py --gate-start 28 --gate-duration 15
+
+
+REFERENCES
+----------
+- Piezoelectric transducer physics
+- Nelder-Mead optimization algorithm
+- Hilbert transform for envelope detection
+- SCPI (Standard Commands for Programmable Instruments)
+- LeCroy WaveStation 2052 programming manual (needed for ARB fix)

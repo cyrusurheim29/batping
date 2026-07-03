@@ -1,0 +1,686 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Stepped-Sine Piezoelectric Transducer Bandwidth Characterization
+
+Validates chirp-based bandwidth measurement by sweeping single-frequency
+sines across the band and measuring response amplitude at each frequency.
+
+For each frequency:
+1. Generate sine wave at that frequency
+2. Upload to Siglent SDG1062X via LAN
+3. Record response with Dodotronic UltraMic @ 384 kHz
+4. Extract transfer function magnitude at that frequency
+5. Store point in overall transfer function
+
+@author: cyrusurheimog
+Created: June 15, 2026
+"""
+
+import numpy as np
+import pyaudio
+import socket
+import time
+from scipy import signal
+from scipy.io import wavfile
+from scipy.signal import savgol_filter
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+# Waveform generator configuration
+SDG_IP = "10.11.13.230"
+SDG_PORT = 5025
+SDG_SAMPLE_RATE = 400000  # 400 kSa/s for SDG
+
+# Mic settings
+DODOMIC_SAMPLE_RATE = 384000
+RECORD_DURATION = 0.3
+CHUNK_SIZE = 4096
+
+# Piezo speaker specifications
+RES_FREQ = 40000
+
+# Frequency sweep configuration
+FREQ_START = 25000   # Hz
+FREQ_END = 55000     # Hz
+FREQ_STEP = 25       # Hz (1200 frequencies, ~25 min total)
+AMPLITUDE = 0.9
+
+OUTPUT_DIR = '/Users/cyrusurheim_1/Downloads/Stubbs_Stuff/Claude_Dir/siglent_project/'
+
+
+class SDG1062X_LAN:
+    """Siglent SDG1062X remote control via LAN (direct ethernet cable) connection."""
+
+    def __init__(self, ip=SDG_IP, port=SDG_PORT, timeout=10.0):
+        self.ip = ip
+        self.port = port
+        self.timeout = timeout
+        self.sock = None
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect((self.ip, self.port))
+        print(f"Connected to SDG @ {self.ip}:{self.port}")
+
+    def disconnect(self):
+        if self.sock:
+            self.sock.close()
+            self.sock = None
+
+    def write(self, cmd):
+        self.sock.sendall((cmd + '\n').encode('utf-8'))
+
+    def write_raw(self, data):
+        self.sock.sendall(data)
+
+    def read(self, bufsize=4096):
+        return self.sock.recv(bufsize).decode('utf-8').strip()
+
+    def query(self, cmd):
+        self.write(cmd)
+        time.sleep(0.1)
+        return self.read()
+
+    def upload_waveform(self, name, wave_data, freq_hz, ampl_vpp=2.0, channel=1):
+        """Upload waveform with little-endian 16-bit encoding."""
+        wave_int16 = np.clip(wave_data, -1.0, 1.0)
+        wave_int16 = (wave_int16 * 32767).astype(np.int16)
+        bin_data = wave_int16.astype('<i2').tobytes()
+
+        cmd_prefix = f"C{channel}:WVDT WVNM,{name},FREQ,{freq_hz},AMPL,{ampl_vpp},OFST,0,PHASE,0,WAVEDATA,"
+        full_cmd = cmd_prefix.encode('utf-8') + bin_data + b'\n'
+
+        self.write_raw(full_cmd)
+        time.sleep(0.5)
+
+        self.write(f"C{channel}:ARWV NAME,{name}")
+        time.sleep(0.2)
+
+    def set_arb_mode(self, channel=1):
+        self.write(f"C{channel}:BSWV WVTP,ARB")
+        time.sleep(0.2)
+
+    def output_on(self, channel=1):
+        self.write(f"C{channel}:OUTP ON")
+
+    def output_off(self, channel=1):
+        self.write(f"C{channel}:OUTP OFF")
+
+
+def generate_sine_waveform(freq, duration, sample_rate, amplitude=0.9):
+    """Generate a windowed sine wave at the specified frequency."""
+    n_samples = int(duration * sample_rate)
+    t = np.arange(n_samples) / sample_rate
+    waveform = amplitude * np.sin(2 * np.pi * freq * t)
+
+    # Apply Tukey window to avoid spectral leakage from edge discontinuities
+    window = signal.windows.tukey(n_samples, alpha=0.1)
+    waveform = waveform * window
+
+    return t, waveform
+
+
+def create_sdg_waveform(waveform, sdg_sample_rate, dodomic_sample_rate, duration, freq):
+    """Create SDG waveform buffer with sine wave embedded."""
+    # Number of SDG samples that make up one period
+    period_samples = int(sdg_sample_rate / freq)
+
+    # Resample the waveform to SDG sample rate
+    waveform_samples_needed = int(duration * sdg_sample_rate)
+    if len(waveform) != waveform_samples_needed:
+        waveform_resampled = signal.resample(waveform, waveform_samples_needed)
+    else:
+        waveform_resampled = waveform
+
+    # Create buffer for one period (SDG repeats this)
+    waveform_final = np.zeros(period_samples)
+
+    if len(waveform_resampled) > period_samples:
+        # For continuous sine, just take one period
+        waveform_final = waveform_resampled[:period_samples]
+    else:
+        waveform_final[:len(waveform_resampled)] = waveform_resampled
+
+    # Normalize to [-1, 1]
+    max_val = np.max(np.abs(waveform_final))
+    if max_val > 0:
+        waveform_final = waveform_final / max_val * 0.9
+
+    return waveform_final
+
+
+def find_ultramic():
+    """Find and return UltraMic device."""
+    pa = pyaudio.PyAudio()
+    mic_index = None
+
+    print("\nAvailable audio devices:")
+    for i in range(pa.get_device_count()):
+        info = pa.get_device_info_by_index(i)
+        if info['maxInputChannels'] > 0:
+            print(f"  [{i}] {info['name']} (in: {info['maxInputChannels']}ch)")
+            if "UltraMic" in info['name']:
+                mic_index = i
+
+    if mic_index is None:
+        print("\nUltraMic not found!")
+        pa.terminate()
+        return None, None
+
+    print(f"\nUsing UltraMic at index {mic_index}")
+    return pa, mic_index
+
+
+def record_audio(pa, mic_index, duration=RECORD_DURATION):
+    """Record audio from UltraMic."""
+    n_samples = int(duration * DODOMIC_SAMPLE_RATE)
+
+    stream = pa.open(
+        format=pyaudio.paInt16,
+        channels=1,
+        rate=DODOMIC_SAMPLE_RATE,
+        input=True,
+        input_device_index=mic_index,
+        frames_per_buffer=CHUNK_SIZE
+    )
+
+    frames = []
+    remaining = n_samples
+
+    while remaining > 0:
+        chunk = min(CHUNK_SIZE, remaining)
+        data = stream.read(chunk, exception_on_overflow=False)
+        frames.append(data)
+        remaining -= chunk
+
+    stream.stop_stream()
+    stream.close()
+
+    audio = np.frombuffer(b''.join(frames), dtype=np.int16)
+    audio_float = audio.astype(np.float64) / 32768.0
+
+    return audio_float
+
+
+def find_bandwidth(freqs, H_mag_db, threshold_db=-3, search_range=(35000, 50000), smooth_window=11):
+    """
+    Find the bandwidth at a given threshold below peak.
+
+    Returns:
+        f_center, f_low, f_high, bandwidth, peak_freq, peak_mag, H_mag_smooth
+    """
+    # Smooth the magnitude response
+    if smooth_window > 3 and len(H_mag_db) > smooth_window:
+        H_mag_smooth = savgol_filter(H_mag_db, smooth_window, 3)
+    else:
+        H_mag_smooth = H_mag_db.copy()
+
+    # Constrain search to expected piezo frequency range
+    search_mask = (freqs >= search_range[0]) & (freqs <= search_range[1])
+    search_indices = np.where(search_mask)[0]
+
+    if len(search_indices) == 0:
+        raise ValueError(f"No frequencies in search range {search_range}")
+
+    # Find peak within search range
+    H_mag_search = H_mag_smooth[search_mask]
+    peak_idx_in_search = np.argmax(H_mag_search)
+    peak_idx = search_indices[peak_idx_in_search]
+
+    peak_freq = freqs[peak_idx]
+    peak_mag = H_mag_smooth[peak_idx]
+
+    threshold = peak_mag + threshold_db
+
+    # Find where magnitude crosses threshold
+    above_threshold = H_mag_smooth >= threshold
+
+    # Find edges
+    transitions = np.diff(above_threshold.astype(int))
+    rise_idx = np.where(transitions == 1)[0]
+    fall_idx = np.where(transitions == -1)[0]
+
+    # Find the passband containing the peak
+    if len(rise_idx) > 0:
+        rises_before_peak = rise_idx[rise_idx < peak_idx]
+        if len(rises_before_peak) > 0:
+            low_idx = rises_before_peak[-1]
+        else:
+            low_idx = 0
+    else:
+        low_idx = 0
+
+    if len(fall_idx) > 0:
+        falls_after_peak = fall_idx[fall_idx > peak_idx]
+        if len(falls_after_peak) > 0:
+            high_idx = falls_after_peak[0]
+        else:
+            high_idx = len(freqs) - 1
+    else:
+        high_idx = len(freqs) - 1
+
+    f_low = freqs[low_idx]
+    f_high = freqs[high_idx]
+    bandwidth = f_high - f_low
+    f_center = (f_low + f_high) / 2
+
+    return f_center, f_low, f_high, bandwidth, peak_freq, peak_mag, H_mag_smooth
+
+
+def plot_stepped_sine_result(freqs, H_mag, H_mag_smooth, H_phase,
+                             f_center_3db, f_low_3db, f_high_3db, bw_3db,
+                             f_center_6db, f_low_6db, f_high_6db, bw_6db,
+                             peak_mag, received_example, output_path,
+                             chirp_data_path=None):
+    """Create comprehensive stepped-sine characterization plot matching piezo_characterization.py format."""
+
+    # Load chirp data for comparison in passband panel
+    freqs_chirp = None
+    H_mag_chirp = None
+    bw_chirp = None
+    if chirp_data_path:
+        try:
+            chirp_data = np.load(chirp_data_path)
+            freqs_chirp = chirp_data['freqs']
+            H_mag_chirp = chirp_data['H_mag']
+            bw_chirp = float(chirp_data['bandwidth'])
+        except:
+            pass
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # Panel 1: Magnitude response (full range)
+    ax1 = axes[0, 0]
+    ax1.plot(freqs/1000, H_mag, 'b-', linewidth=0.5, alpha=0.5, label='Raw')
+    ax1.plot(freqs/1000, H_mag_smooth, 'b-', linewidth=2, label='Smoothed')
+    ax1.axhline(peak_mag - 3, color='r', linestyle='--', label='-3 dB')
+    ax1.axhline(peak_mag - 6, color='orange', linestyle='--', label='-6 dB')
+    ax1.axvline(f_low_3db/1000, color='g', linestyle=':', alpha=0.7)
+    ax1.axvline(f_high_3db/1000, color='g', linestyle=':', alpha=0.7)
+    ax1.axvline(f_center_3db/1000, color='g', linestyle='-', alpha=0.7,
+                label=f'Center: {f_center_3db/1000:.1f} kHz')
+    ax1.fill_betweenx([np.min(H_mag_smooth)-5, np.max(H_mag_smooth)+5],
+                      f_low_3db/1000, f_high_3db/1000,
+                      alpha=0.2, color='green', label=f'BW: {bw_3db/1000:.1f} kHz')
+    ax1.set_xlabel('Frequency (kHz)')
+    ax1.set_ylabel('Magnitude (dB)')
+    ax1.set_title('Piezo Transfer Function - Magnitude Response')
+    ax1.legend(loc='upper right')
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlim([FREQ_START/1000, FREQ_END/1000])
+
+    # Panel 2: Passband detail with chirp comparison
+    ax2 = axes[0, 1]
+    zoom_mask = (freqs >= 35000) & (freqs <= 48000)
+
+    # Normalize stepped-sine to peak = 0 dB
+    ss_peak = np.max(H_mag_smooth)
+    ax2.plot(freqs[zoom_mask]/1000, H_mag[zoom_mask] - ss_peak, 'b-', linewidth=0.5, alpha=0.3)
+    ax2.plot(freqs[zoom_mask]/1000, H_mag_smooth[zoom_mask] - ss_peak, 'b-', linewidth=2,
+             label=f'Stepped-Sine (BW={bw_3db/1000:.2f} kHz)')
+
+    # Add chirp trace if available
+    if freqs_chirp is not None and H_mag_chirp is not None:
+        chirp_zoom_mask = (freqs_chirp >= 35000) & (freqs_chirp <= 48000)
+        chirp_peak = np.max(H_mag_chirp)
+        ax2.plot(freqs_chirp[chirp_zoom_mask]/1000, H_mag_chirp[chirp_zoom_mask] - chirp_peak,
+                 'r-', linewidth=2, alpha=0.7, label=f'Chirp (BW={bw_chirp/1000:.2f} kHz)')
+
+    ax2.axhline(-3, color='gray', linestyle='--', linewidth=1.5, label='-3 dB')
+    ax2.axhline(-6, color='gray', linestyle='--', linewidth=1, alpha=0.7, label='-6 dB')
+    ax2.set_xlabel('Frequency (kHz)')
+    ax2.set_ylabel('Magnitude (dB, normalized)')
+    ax2.set_title(f'Passband Comparison — Stepped-Sine BW: {bw_3db/1000:.2f} kHz')
+    ax2.legend(loc='lower right', fontsize=8)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_ylim([-25, 3])
+
+    # Panel 3: Phase response (detrended to show resonant behavior)
+    ax3 = axes[1, 0]
+    phase_unwrapped = np.unwrap(H_phase)
+
+    # Remove linear trend (propagation delay) to reveal resonant phase shift
+    # Fit line to regions away from resonance
+    mask_fit = (freqs < 35000) | (freqs > 47000)
+    if np.sum(mask_fit) > 10:
+        coeffs = np.polyfit(freqs[mask_fit], phase_unwrapped[mask_fit], 1)
+        phase_linear = np.polyval(coeffs, freqs)
+        phase_detrended = phase_unwrapped - phase_linear
+
+        # Convert to degrees for readability
+        phase_detrended_deg = np.degrees(phase_detrended)
+
+        ax3.plot(freqs/1000, phase_detrended_deg, 'b-', linewidth=1)
+        ax3.set_ylabel('Phase (degrees, detrended)')
+        ax3.set_title('Resonant Phase Shift (propagation delay removed)')
+    else:
+        # Fallback to raw unwrapped phase
+        ax3.plot(freqs/1000, phase_unwrapped, 'b-', linewidth=1)
+        ax3.set_ylabel('Phase (radians)')
+        ax3.set_title('Piezo Transfer Function - Phase Response')
+
+    ax3.axvline(f_low_3db/1000, color='g', linestyle=':', alpha=0.7)
+    ax3.axvline(f_high_3db/1000, color='g', linestyle=':', alpha=0.7)
+    ax3.axvline(f_center_3db/1000, color='purple', linestyle=':', alpha=0.7)
+    ax3.set_xlabel('Frequency (kHz)')
+    ax3.grid(True, alpha=0.3)
+    ax3.set_xlim([30, 50])  # Zoom to see resonant region
+
+    # Panel 4: Time-domain received signal (example from one frequency)
+    ax4 = axes[1, 1]
+    t_received = np.arange(len(received_example)) / DODOMIC_SAMPLE_RATE * 1000  # ms
+    ax4.plot(t_received, received_example, 'b-', linewidth=0.5)
+    ax4.set_xlabel('Time (ms)')
+    ax4.set_ylabel('Amplitude')
+    ax4.set_title('Received Signal (Time Domain) - Example')
+    ax4.grid(True, alpha=0.3)
+    ax4.set_xlim([0, min(50, t_received[-1])])
+
+    # Add summary text (bottom left)
+    fig.suptitle('Piezoelectric Transducer Characterization (Stepped-Sine)', fontsize=14, fontweight='bold')
+
+    # Calculate derived parameters with explanation
+    min_chip_us = 1e6 / bw_3db if bw_3db > 0 else 0
+    rec_chip_min = min_chip_us
+    rec_chip_max = 2 * min_chip_us
+
+    summary_text = (
+        f"MEASUREMENT PARAMETERS\n"
+        f"  Frequency range: {FREQ_START/1000:.0f} - {FREQ_END/1000:.0f} kHz\n"
+        f"  Step size: {FREQ_STEP} Hz\n"
+        f"  Number of points: {len(freqs)}\n"
+        f"  Record duration: {RECORD_DURATION*1000:.0f} ms/freq\n"
+        f"\n"
+        f"RESULTS\n"
+        f"  Center Frequency: {f_center_3db/1000:.2f} kHz\n"
+        f"  -3 dB Bandwidth: {bw_3db/1000:.2f} kHz\n"
+        f"  -3 dB Passband: {f_low_3db/1000:.1f} - {f_high_3db/1000:.1f} kHz\n"
+        f"  -6 dB Bandwidth: {bw_6db/1000:.2f} kHz\n"
+        f"  -6 dB Passband: {f_low_6db/1000:.1f} - {f_high_6db/1000:.1f} kHz\n"
+        f"  Q Factor: {f_center_3db/bw_3db:.1f}\n"
+        f"\n"
+        f"DERIVED PARAMETERS\n"
+        f"  Min chip duration: {min_chip_us:.0f} us\n"
+        f"    (= 1/BW = 1/{bw_3db/1000:.2f} kHz)\n"
+        f"  Recommended T_c: {rec_chip_min:.0f} - {rec_chip_max:.0f} us"
+    )
+    fig.text(0.02, 0.02, summary_text, fontsize=9, family='monospace',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
+             verticalalignment='bottom')
+
+    plt.tight_layout(rect=[0, 0.08, 1, 0.96])
+    plt.savefig(output_path, dpi=150)
+    print(f"\nSaved standalone plot: {output_path}")
+    plt.close()
+
+
+def plot_comparison_with_chirp(freqs_ss, H_mag_ss_smooth, f_center_ss, f_low_ss, f_high_ss, bw_ss, chirp_data_path, output_path):
+    """Plot stepped-sine result overlaid with chirp-based result."""
+
+    # Load chirp data
+    try:
+        chirp_data = np.load(chirp_data_path)
+        freqs_chirp = chirp_data['freqs']
+        H_mag_chirp = chirp_data['H_mag_smooth'] if 'H_mag_smooth' in chirp_data else chirp_data['H_mag']
+        f_center_chirp = float(chirp_data['f_center'])
+        bw_chirp = float(chirp_data['bandwidth'])
+        print(f"Loaded chirp data: center={f_center_chirp/1000:.2f} kHz, BW={bw_chirp/1000:.2f} kHz")
+    except Exception as e:
+        print(f"Warning: Could not load chirp data: {e}")
+        print("Generating comparison plot with stepped-sine only.")
+        freqs_chirp = None
+        H_mag_chirp = None
+        f_center_chirp = None
+        bw_chirp = None
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    # Plot stepped-sine
+    ax.plot(freqs_ss/1000, H_mag_ss_smooth, 'b-', linewidth=2,
+            label=f'Stepped-Sine (BW={bw_ss/1000:.2f} kHz)')
+
+    # Plot chirp if available
+    if freqs_chirp is not None:
+        # Normalize chirp to match stepped-sine scale (align peaks)
+        peak_ss = np.max(H_mag_ss_smooth)
+        peak_chirp = np.max(H_mag_chirp)
+        H_mag_chirp_normalized = H_mag_chirp - peak_chirp + peak_ss
+
+        ax.plot(freqs_chirp/1000, H_mag_chirp_normalized, 'r--', linewidth=2, alpha=0.7,
+                label=f'Chirp (BW={bw_chirp/1000:.2f} kHz)')
+
+    # Add threshold lines
+    peak_mag = np.max(H_mag_ss_smooth)
+    ax.axhline(peak_mag - 3, color='gray', linestyle=':', alpha=0.5, label='-3 dB threshold')
+
+    # Passband shading
+    ax.axvline(f_low_ss/1000, color='b', linestyle=':', alpha=0.5)
+    ax.axvline(f_high_ss/1000, color='b', linestyle=':', alpha=0.5)
+
+    ax.set_xlabel('Frequency (kHz)', fontsize=12)
+    ax.set_ylabel('Magnitude (dB, normalized)', fontsize=12)
+    ax.set_title('Chirp vs Stepped-Sine Bandwidth Measurement Comparison', fontsize=14)
+    ax.legend(loc='upper right', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim([30, 50])
+
+    # Add comparison text box
+    if bw_chirp is not None:
+        diff_bw = bw_ss - bw_chirp
+        diff_pct = (diff_bw / bw_chirp) * 100
+        comparison_text = (
+            f"Stepped-Sine: {f_center_ss/1000:.2f} kHz center, {bw_ss/1000:.2f} kHz BW\n"
+            f"Chirp:        {f_center_chirp/1000:.2f} kHz center, {bw_chirp/1000:.2f} kHz BW\n"
+            f"Difference:   {diff_bw:.0f} Hz ({diff_pct:+.1f}%)"
+        )
+    else:
+        comparison_text = f"Stepped-Sine: {f_center_ss/1000:.2f} kHz center, {bw_ss/1000:.2f} kHz BW"
+
+    ax.text(0.02, 0.02, comparison_text, transform=ax.transAxes, fontsize=10,
+            verticalalignment='bottom', family='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    print(f"Saved comparison plot: {output_path}")
+    plt.close()
+
+
+def main():
+    print("=" * 60)
+    print("Stepped-Sine Piezo Bandwidth Characterization")
+    print("=" * 60)
+    print(f"\nFrequency range: {FREQ_START/1000:.0f} - {FREQ_END/1000:.0f} kHz")
+    print(f"Step size: {FREQ_STEP} Hz")
+    freq_list = np.arange(FREQ_START, FREQ_END + FREQ_STEP, FREQ_STEP)
+    print(f"Total measurements: {len(freq_list)}")
+    print(f"Estimated time: {len(freq_list) * (RECORD_DURATION + 1.0) / 60:.1f} minutes")
+
+    # Initialize storage
+    transfer_magnitudes = []
+    transfer_phases = []
+    received_example = None  # Store one example recording for plot
+
+    # Find mic once
+    pa, mic_index = find_ultramic()
+    if pa is None:
+        return 1
+
+    # Connect to SDG once
+    sdg = None
+    try:
+        sdg = SDG1062X_LAN()
+        sdg.connect()
+        idn = sdg.query("*IDN?")
+        print(f"\nDevice: {idn}")
+
+        if "Siglent" not in idn:
+            print("Warning: Device may not be Siglent SDG")
+
+        sdg.set_arb_mode(channel=1)
+
+        print("\n" + "-" * 60)
+        print("Starting frequency sweep...")
+        print("-" * 60)
+
+        start_time = time.time()
+
+        for i, freq in enumerate(freq_list):
+            # Progress indicator
+            if i % 10 == 0:
+                elapsed = time.time() - start_time
+                if i > 0:
+                    eta = elapsed / i * (len(freq_list) - i)
+                    print(f"\n[{i}/{len(freq_list)}] {freq/1000:.1f} kHz (ETA: {eta/60:.1f} min)")
+                else:
+                    print(f"\n[{i}/{len(freq_list)}] {freq/1000:.1f} kHz")
+
+            # Generate sine at this frequency
+            t_wf, wf = generate_sine_waveform(freq, RECORD_DURATION, DODOMIC_SAMPLE_RATE, AMPLITUDE)
+
+            # Create SDG waveform buffer
+            sdg_waveform = create_sdg_waveform(wf, SDG_SAMPLE_RATE, DODOMIC_SAMPLE_RATE,
+                                               RECORD_DURATION, freq)
+
+            # Upload and play
+            sdg.upload_waveform(f"ss{int(freq)}", sdg_waveform, freq, ampl_vpp=2.0)
+            sdg.output_on(channel=1)
+            time.sleep(0.2)  # Let piezo settle
+
+            # Record
+            received = record_audio(pa, mic_index, RECORD_DURATION)
+
+            # Turn off between measurements
+            sdg.output_off(channel=1)
+
+            # Extract magnitude at this frequency via FFT
+            n_fft = len(received)
+            fft_rx = np.fft.fft(received)
+
+            # Use the actual generated waveform as reference (matches chirp approach)
+            # Pad or trim wf to match received length
+            wf_matched = np.zeros(n_fft)
+            wf_len = min(len(wf), n_fft)
+            wf_matched[:wf_len] = wf[:wf_len]
+            fft_tx = np.fft.fft(wf_matched)
+
+            freqs_fft = np.fft.fftfreq(n_fft, 1/DODOMIC_SAMPLE_RATE)
+
+            # Find bin closest to our frequency
+            idx = np.argmin(np.abs(freqs_fft - freq))
+
+            # Transfer function at this frequency
+            H = fft_rx[idx] / (fft_tx[idx] + 1e-10)
+            mag_db = 20 * np.log10(np.abs(H) + 1e-10)
+            phase_rad = np.angle(H)
+
+            transfer_magnitudes.append(mag_db)
+            transfer_phases.append(phase_rad)
+
+            # Save example recording near resonance for time-domain plot
+            if 40000 <= freq <= 41000 and received_example is None:
+                received_example = received.copy()
+
+            # Compact progress
+            print(f"  {freq/1000:.1f} kHz: {mag_db:.1f} dB", end="\r")
+
+        print("\n" + "-" * 60)
+        print("Sweep complete!")
+        print("-" * 60)
+
+    except Exception as e:
+        print(f"\nError during measurement: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+    finally:
+        if sdg:
+            sdg.output_off(channel=1)
+            sdg.disconnect()
+        if pa:
+            pa.terminate()
+
+    # Convert to arrays
+    freqs_measured = np.array(freq_list)
+    H_mag = np.array(transfer_magnitudes)
+    H_phase = np.array(transfer_phases)
+
+    # Find bandwidth at -3dB and -6dB
+    print("\nAnalyzing results...")
+    try:
+        f_center_3db, f_low_3db, f_high_3db, bw_3db, peak_freq, peak_mag, H_mag_smooth = find_bandwidth(
+            freqs_measured, H_mag, threshold_db=-3, search_range=(35000, 50000), smooth_window=11
+        )
+        f_center_6db, f_low_6db, f_high_6db, bw_6db, _, _, _ = find_bandwidth(
+            freqs_measured, H_mag, threshold_db=-6, search_range=(35000, 50000), smooth_window=11
+        )
+
+        print(f"\n{'='*60}")
+        print("RESULTS")
+        print(f"{'='*60}")
+        print(f"  Center frequency: {f_center_3db/1000:.2f} kHz")
+        print(f"  Peak frequency:   {peak_freq/1000:.2f} kHz")
+        print(f"  -3 dB bandwidth:  {bw_3db/1000:.2f} kHz")
+        print(f"  -3 dB passband:   {f_low_3db/1000:.2f} - {f_high_3db/1000:.2f} kHz")
+        print(f"  -6 dB bandwidth:  {bw_6db/1000:.2f} kHz")
+        print(f"  -6 dB passband:   {f_low_6db/1000:.2f} - {f_high_6db/1000:.2f} kHz")
+        print(f"  Q factor:         {f_center_3db/bw_3db:.1f}")
+        print(f"  Min chip duration: {1e6/bw_3db:.0f} us")
+
+    except Exception as e:
+        print(f"Warning: Could not find bandwidth: {e}")
+        H_mag_smooth = H_mag
+        f_center_3db = f_low_3db = f_high_3db = bw_3db = 0
+        f_center_6db = f_low_6db = f_high_6db = bw_6db = 0
+        peak_mag = 0
+
+    # Ensure we have an example recording
+    if received_example is None:
+        received_example = np.zeros(1000)
+
+    # Save raw data
+    data_path = OUTPUT_DIR + 'stepped_sine_characterization.npz'
+    np.savez(data_path,
+             freqs=freqs_measured,
+             H_mag=H_mag,
+             H_mag_smooth=H_mag_smooth,
+             H_phase=H_phase,
+             f_center=f_center_3db,
+             f_low=f_low_3db,
+             f_high=f_high_3db,
+             bandwidth=bw_3db,
+             f_center_6db=f_center_6db,
+             f_low_6db=f_low_6db,
+             f_high_6db=f_high_6db,
+             bandwidth_6db=bw_6db)
+    print(f"\nSaved data: {data_path}")
+
+    # Generate plots
+    print("\nGenerating plots...")
+
+    # Standalone plot
+    plot_stepped_sine_result(
+        freqs_measured, H_mag, H_mag_smooth, H_phase,
+        f_center_3db, f_low_3db, f_high_3db, bw_3db,
+        f_center_6db, f_low_6db, f_high_6db, bw_6db,
+        peak_mag, received_example,
+        OUTPUT_DIR + 'stepped_sine_characterization.png',
+        chirp_data_path=OUTPUT_DIR + 'piezo_characterization.npz'
+    )
+
+    # Comparison plot
+    plot_comparison_with_chirp(
+        freqs_measured, H_mag_smooth, f_center_3db, f_low_3db, f_high_3db, bw_3db,
+        chirp_data_path=OUTPUT_DIR + 'piezo_characterization.npz',
+        output_path=OUTPUT_DIR + 'stepped_sine_vs_chirp_comparison.png'
+    )
+
+    print("\nDone!")
+    return 0
+
+
+if __name__ == '__main__':
+    exit(main())

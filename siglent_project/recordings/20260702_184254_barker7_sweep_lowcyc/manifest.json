@@ -1,0 +1,243 @@
+{
+  "timestamp": "2026-07-02T18:42:54.973964",
+  "version": "V5",
+  "description": "barker7_sweep_lowcyc",
+  "hardware": {
+    "sdg": "SDG1062X @ 10.11.13.230",
+    "sdg_sample_rate_hz": 400000,
+    "mic": "Dodotronic UltraMic",
+    "mic_sample_rate_hz": 384000,
+    "piezo_center_freq_hz": 41350,
+    "piezo_bandwidth_hz": 1700
+  },
+  "parameters": {
+    "barker_length": 7,
+    "cycles_per_chip": [
+      2,
+      4,
+      6,
+      8,
+      9,
+      10,
+      11,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22,
+      24,
+      28,
+      32,
+      36,
+      40,
+      44,
+      48
+    ],
+    "carrier_freq_hz": 41350,
+    "rep_rate_hz": 40,
+    "record_duration_s": 0.5
+  },
+  "files": {
+    "2cyc": {
+      "theo_fwhm_us": 140.625,
+      "theo_sidelobe_db": -Infinity,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.913241138065814,
+      "tof_us": 5700.520833333333,
+      "transfer_efficiency_db": -63.65861234815569,
+      "wav": "raw/2cyc_received.wav",
+      "plot": "plots/2cyc.png"
+    },
+    "4cyc": {
+      "theo_fwhm_us": 156.25,
+      "theo_sidelobe_db": -Infinity,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.39455881646684,
+      "tof_us": 5695.3125,
+      "transfer_efficiency_db": -57.40002864854992,
+      "wav": "raw/4cyc_received.wav",
+      "plot": "plots/4cyc.png"
+    },
+    "6cyc": {
+      "theo_fwhm_us": 177.08333333333334,
+      "theo_sidelobe_db": -Infinity,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.34329437001579,
+      "tof_us": 5700.520833333333,
+      "transfer_efficiency_db": -53.95680955073455,
+      "wav": "raw/6cyc_received.wav",
+      "plot": "plots/6cyc.png"
+    },
+    "8cyc": {
+      "theo_fwhm_us": 218.75,
+      "theo_sidelobe_db": -19.245064234344717,
+      "measured_fwhm_us": 270.8333333333333,
+      "measured_sidelobe_db": -10.8016359532415,
+      "tof_us": 5697.916666666666,
+      "transfer_efficiency_db": -51.3794290572183,
+      "wav": "raw/8cyc_received.wav",
+      "plot": "plots/8cyc.png"
+    },
+    "9cyc": {
+      "theo_fwhm_us": 239.58333333333331,
+      "theo_sidelobe_db": -19.05977259637518,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.294210580113825,
+      "tof_us": 5700.520833333333,
+      "transfer_efficiency_db": -50.382501639226376,
+      "wav": "raw/9cyc_received.wav",
+      "plot": "plots/9cyc.png"
+    },
+    "10cyc": {
+      "theo_fwhm_us": 260.4166666666667,
+      "theo_sidelobe_db": -18.876284408818023,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.810382679257696,
+      "tof_us": 5697.916666666666,
+      "transfer_efficiency_db": -49.48830696791656,
+      "wav": "raw/10cyc_received.wav",
+      "plot": "plots/10cyc.png"
+    },
+    "11cyc": {
+      "theo_fwhm_us": 286.4583333333333,
+      "theo_sidelobe_db": -18.443364147688452,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.188534495263859,
+      "tof_us": 5697.916666666666,
+      "transfer_efficiency_db": -48.592060104977364,
+      "wav": "raw/11cyc_received.wav",
+      "plot": "plots/11cyc.png"
+    },
+    "12cyc": {
+      "theo_fwhm_us": 307.29166666666663,
+      "theo_sidelobe_db": -18.39851644085945,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.093283820663348,
+      "tof_us": 5703.125,
+      "transfer_efficiency_db": -47.85760398342069,
+      "wav": "raw/12cyc_received.wav",
+      "plot": "plots/12cyc.png"
+    },
+    "14cyc": {
+      "theo_fwhm_us": 354.1666666666667,
+      "theo_sidelobe_db": -18.32931047691765,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.327619946844791,
+      "tof_us": 5700.520833333333,
+      "transfer_efficiency_db": -46.4851965443864,
+      "wav": "raw/14cyc_received.wav",
+      "plot": "plots/14cyc.png"
+    },
+    "16cyc": {
+      "theo_fwhm_us": 401.0416666666667,
+      "theo_sidelobe_db": -18.216414295872557,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.243737919701346,
+      "tof_us": 5700.520833333333,
+      "transfer_efficiency_db": -45.358829304912696,
+      "wav": "raw/16cyc_received.wav",
+      "plot": "plots/16cyc.png"
+    },
+    "18cyc": {
+      "theo_fwhm_us": 447.9166666666667,
+      "theo_sidelobe_db": -15.321116180203662,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -11.06777713976388,
+      "tof_us": 5697.916666666666,
+      "transfer_efficiency_db": -44.30973420817458,
+      "wav": "raw/18cyc_received.wav",
+      "plot": "plots/18cyc.png"
+    },
+    "20cyc": {
+      "theo_fwhm_us": 489.5833333333333,
+      "theo_sidelobe_db": -13.8433437911191,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.216095781395305,
+      "tof_us": 5697.916666666666,
+      "transfer_efficiency_db": -43.42062907694637,
+      "wav": "raw/20cyc_received.wav",
+      "plot": "plots/20cyc.png"
+    },
+    "22cyc": {
+      "theo_fwhm_us": 536.4583333333334,
+      "theo_sidelobe_db": -13.810979956366797,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.367627848948796,
+      "tof_us": 5697.916666666666,
+      "transfer_efficiency_db": -42.57146030848281,
+      "wav": "raw/22cyc_received.wav",
+      "plot": "plots/22cyc.png"
+    },
+    "24cyc": {
+      "theo_fwhm_us": 583.3333333333334,
+      "theo_sidelobe_db": -13.804571982537738,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.769172897725287,
+      "tof_us": 5695.3125,
+      "transfer_efficiency_db": -41.837004177457075,
+      "wav": "raw/24cyc_received.wav",
+      "plot": "plots/24cyc.png"
+    },
+    "28cyc": {
+      "theo_fwhm_us": 677.0833333333334,
+      "theo_sidelobe_db": -13.792997466557,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.018427307348581,
+      "tof_us": 5700.520833333333,
+      "transfer_efficiency_db": -40.46459672273813,
+      "wav": "raw/28cyc_received.wav",
+      "plot": "plots/28cyc.png"
+    },
+    "32cyc": {
+      "theo_fwhm_us": 770.8333333333334,
+      "theo_sidelobe_db": -13.7809597227778,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.140427141803306,
+      "tof_us": 5700.520833333333,
+      "transfer_efficiency_db": -39.3089347072256,
+      "wav": "raw/32cyc_received.wav",
+      "plot": "plots/32cyc.png"
+    },
+    "36cyc": {
+      "theo_fwhm_us": 864.5833333333333,
+      "theo_sidelobe_db": -13.771272324811193,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.460010896222492,
+      "tof_us": 5700.520833333333,
+      "transfer_efficiency_db": -38.289134366224765,
+      "wav": "raw/36cyc_received.wav",
+      "plot": "plots/36cyc.png"
+    },
+    "40cyc": {
+      "theo_fwhm_us": 958.3333333333333,
+      "theo_sidelobe_db": -13.764385453243332,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.275601957109846,
+      "tof_us": 5697.916666666666,
+      "transfer_efficiency_db": -37.376585517268886,
+      "wav": "raw/40cyc_received.wav",
+      "plot": "plots/40cyc.png"
+    },
+    "44cyc": {
+      "theo_fwhm_us": 1046.875,
+      "theo_sidelobe_db": -13.759649426166112,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.279389055355015,
+      "tof_us": 5700.520833333333,
+      "transfer_efficiency_db": -36.550860453595725,
+      "wav": "raw/44cyc_received.wav",
+      "plot": "plots/44cyc.png"
+    },
+    "48cyc": {
+      "theo_fwhm_us": 1140.625,
+      "theo_sidelobe_db": -13.756507910696353,
+      "measured_fwhm_us": 276.0416666666667,
+      "measured_sidelobe_db": -10.610659869965712,
+      "tof_us": 5695.3125,
+      "transfer_efficiency_db": -35.7968635006298,
+      "wav": "raw/48cyc_received.wav",
+      "plot": "plots/48cyc.png"
+    }
+  }
+}

@@ -1,0 +1,471 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{gray!10},
+    frame=single,
+    breaklines=true
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{June 5, 2026}
+\lhead{Cross-Correlation Analysis Plan}
+\cfoot{\thepage}
+
+\title{Plan: Cross-Correlation Analysis with Optimized Waveform + New Optimization}
+\author{BATPING Project}
+\date{June 5, 2026}
+
+\begin{document}
+
+\maketitle
+
+\section*{Context}
+
+\textbf{Current state:} We have completed cross-correlation analysis comparing standard xcorr vs GCC-PHAT on \textit{Gaussian waveform} data, showing:
+\begin{itemize}
+    \item Standard xcorr envelope FWHM: 276--333 $\mu$s depending on preprocessing
+    \item GCC-PHAT (raw data): 21 $\mu$s FWHM (94\% improvement, but noisy/spurious peaks)
+\end{itemize}
+
+\textbf{Optimized waveform available:} Bayesian optimization achieved 41\% FWHM reduction in the \textit{response waveform} (311 $\mu$s vs 530 $\mu$s baseline). Recordings exist:
+\begin{itemize}
+    \item \texttt{matched\_filtering\_v2\_june1-2/optimized\_2m\_reflection\_50Hz.wav}
+    \item \texttt{matched\_filtering\_v2\_june1-2/optimized\_1.8m\_reflection\_50Hz.wav}
+\end{itemize}
+
+\textbf{This plan has two parts:}
+\begin{enumerate}
+    \item Run same xcorr/GCC-PHAT analysis on optimized waveform recordings
+    \item Design new Bayesian optimization targeting xcorr peak sharpness directly
+\end{enumerate}
+
+\hrule
+\vspace{1em}
+
+\section{Part 1: Cross-Correlation Analysis with Optimized Waveform}
+
+\subsection{Task}
+Run the same analysis pipeline we used for Gaussian waveform on the Bayesian-optimized waveform recordings.
+
+\subsection{Data Processing Steps}
+\begin{enumerate}
+    \item Load optimized wav files (2m template, 1.8m signal)
+    \item Create npz files with different preprocessing levels:
+    \begin{itemize}
+        \item \textbf{Envelope}: Bandpass (35--45kHz) + Hilbert envelope
+        \item \textbf{Filtered no-hilbert}: Bandpass only (keeps 40kHz oscillation)
+        \item \textbf{Raw}: No preprocessing
+    \end{itemize}
+    \item Run cross-correlation analysis:
+    \begin{itemize}
+        \item Standard xcorr: all three preprocessing levels
+        \item GCC-PHAT: raw data only (bandpass destroys phase info needed for PHAT)
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Files to Create}
+Working directory: \texttt{matched\_filtering\_v2\_june1-2/}
+
+\textbf{NPZ data files:}
+\begin{itemize}
+    \item \texttt{optimized\_template\_2m\_envelope.npz}
+    \item \texttt{optimized\_signal\_1.8m\_envelope.npz}
+    \item \texttt{optimized\_template\_2m\_filterednohilbert.npz}
+    \item \texttt{optimized\_signal\_1.8m\_filterednohilbert.npz}
+    \item \texttt{optimized\_template\_2m\_raw.npz}
+    \item \texttt{optimized\_signal\_1.8m\_raw.npz}
+\end{itemize}
+
+\textbf{Output plots:}
+\begin{itemize}
+    \item \texttt{optimized\_xcorr\_envelope.png} -- Standard xcorr, envelope data
+    \item \texttt{optimized\_xcorr\_filterednohilbert.png} -- Standard xcorr, filtered data
+    \item \texttt{optimized\_xcorr\_raw.png} -- Standard xcorr, raw data
+    \item \texttt{optimized\_gccphat\_raw.png} -- GCC-PHAT, raw data
+    \item \texttt{optimized\_gccphat\_standalone.png} -- GCC-PHAT correlation plot alone
+\end{itemize}
+
+\subsection{Expected Outcome}
+Compare FWHM results:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcc}
+\toprule
+Preprocessing & Gaussian Waveform & Optimized Waveform \\
+\midrule
+Envelope (std xcorr) & 276 $\mu$s & ? \\
+Filtered (std xcorr) & 219 $\mu$s & ? \\
+Raw (std xcorr) & 333 $\mu$s & ? \\
+Raw (GCC-PHAT) & 21 $\mu$s & ? \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\hrule
+\vspace{1em}
+
+\section{Part 2: Bayesian Optimization Targeting XCorr Peak Sharpness}
+
+\subsection{Motivation}
+The current Bayesian optimizer minimizes \textbf{response waveform FWHM} (piezo output envelope width). But what we actually care about is \textbf{cross-correlation peak sharpness} for TOF measurement. While these are correlated, optimizing the end goal directly may yield better results.
+
+\subsection{Key Insight}
+Response waveform FWHM determines \textit{minimum achievable} xcorr peak width, but:
+\begin{itemize}
+    \item Waveform shape (not just width) affects xcorr sidelobes
+    \item Phase coherence across the waveform affects GCC-PHAT performance
+    \item Optimizing xcorr directly captures all these factors
+\end{itemize}
+
+\subsection{Design Considerations}
+\textbf{Objective function options:}
+\begin{enumerate}
+    \item Standard xcorr envelope FWHM (most robust)
+    \item GCC-PHAT peak width (sharper but noisy -- may be unstable for optimization)
+    \item Peak-to-sidelobe ratio (PSR) -- measures unambiguity
+    \item Weighted combination: \texttt{FWHM + $\lambda$ * (1/PSR)}
+\end{enumerate}
+
+\textbf{Measurement protocol:}
+\begin{itemize}
+    \item Send waveform, record response
+    \item Compute xcorr between two consecutive pulses (or template vs new)
+    \item Extract FWHM and/or PSR from xcorr result
+    \item Return as cost to optimizer
+\end{itemize}
+
+\textbf{Trade-offs:}
+\begin{itemize}
+    \item Slower per iteration (need to compute xcorr, not just envelope FWHM)
+    \item May find different optimum than waveform-FWHM optimization
+    \item Need stable reference (template) for xcorr -- could use self-correlation
+\end{itemize}
+
+\subsection{Implementation Approach}
+Modify \texttt{bayesian\_optimizer.py} to:
+\begin{enumerate}
+    \item Add new cost function: \texttt{xcorr\_fwhm\_cost(waveform)}
+    \item Record response, extract segment, compute xcorr with template
+    \item Measure envelope FWHM of xcorr peak
+    \item Return as optimization target
+\end{enumerate}
+
+\subsection{Decision: Standard XCorr Envelope FWHM}
+\textbf{Objective function:} Standard cross-correlation envelope FWHM (not GCC-PHAT, not self-correlation)
+\begin{itemize}
+    \item Most robust and stable for optimization loop
+    \item Directly measures what matters for TOF precision
+    \item Template-based: correlate new response with fixed template
+\end{itemize}
+
+\subsection{Implementation Steps}
+\begin{enumerate}
+    \item Create initial template by recording baseline Gaussian response
+    \item For each optimizer iteration:
+    \begin{itemize}
+        \item Generate candidate waveform
+        \item Send to piezo, record response
+        \item Compute xcorr(template, response)
+        \item Extract envelope via Hilbert transform
+        \item Measure FWHM of envelope peak
+        \item Return FWHM as cost (minimize)
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Files to Modify/Create}
+\begin{itemize}
+    \item \texttt{bayesian\_optimization/bayesian\_optimizer\_xcorr.py} -- New optimizer targeting xcorr FWHM
+    \item Reuse existing hardware interface from \texttt{bayesian\_optimizer.py}
+\end{itemize}
+
+\hrule
+\vspace{1em}
+
+\section{Verification}
+
+\subsection{Part 1 Verification}
+\begin{itemize}
+    \item Compare optimized vs Gaussian waveform FWHM numbers
+    \item Visual comparison of xcorr peak shapes
+    \item Check if optimized waveform gives tighter peaks
+\end{itemize}
+
+\subsection{Part 2 Verification}
+\begin{itemize}
+    \item Run optimization for $\sim$50--100 iterations
+    \item Compare best xcorr FWHM vs baseline
+    \item Compare with result from waveform-FWHM optimization
+    \item Test: does xcorr-optimized waveform give better TOF precision?
+\end{itemize}
+
+\hrule
+\vspace{1em}
+
+\section{Original Context (Reference)}
+
+BATPING measures dome temperature fluctuations via changes in the speed of sound. The core measurement is time-of-flight (TOF) of an ultrasonic pulse along a fixed path. Temperature changes cause speed-of-sound changes:
+
+$$c(T) = 331.3 \sqrt{1 + T/273.15} \approx 331.3 + 0.6T \text{ m/s}$$
+
+\textbf{Primary Goal:} Verify that the system can achieve \textbf{0.1$^\circ$C RMS temperature resolution}.
+
+\subsection{Experimental Setup (Lab Configuration)}
+
+\textbf{Geometry:} Reflector-based round-trip measurement
+\begin{itemize}
+    \item Piezo array and microphone positioned side-by-side, both facing a wooden slab reflector
+    \item One-way distance to reflector: \textbf{1.406 m}
+    \item Round-trip path length: \textbf{2.812 m}
+    \item Expected TOF: 2.812 m / 343 m/s $\approx$ \textbf{8.2 ms}
+    \item Reflector: flat wooden slab oriented perpendicular to acoustic path
+\end{itemize}
+
+\textbf{Why this works:} Both flat reflector (1 reflection) and corner-cube retroreflector (3 reflections) use an odd number of reflections, preserving pressure phase. The flat slab loses the angular tolerance of a CCR but works if aligned orthogonally.
+
+\textbf{Considerations:}
+\begin{itemize}
+    \item Align slab carefully --- tilt will deflect return beam away from mic
+    \item Mic/piezo should be close together to share the same acoustic path
+    \item Wood absorbs some energy --- expect lower SNR than CCR, but should be adequate
+\end{itemize}
+
+\subsection{Path Length Analysis}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Path length & Shift/1$^\circ$C & Shift/0.1$^\circ$C & Samples @ 384kHz \\
+\midrule
+18.7 cm (old bench) & 0.95 $\mu$s & 95 ns & 0.037 samples \\
+1 m & 5.1 $\mu$s & 510 ns & 0.20 samples \\
+\textbf{2.812 m (current)} & \textbf{14.3 $\mu$s} & \textbf{1.43 $\mu$s} & \textbf{0.55 samples} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key advantage:} 2.8m round-trip gives 15$\times$ more TOF shift per degree than the 18.7cm bench setup. Achieving 0.1$^\circ$C resolution requires $\sim$1.4 $\mu$s precision --- about 0.55 samples --- achievable with sub-sample interpolation.
+
+\subsection{Verification Approach: Measure TOF Repeatability Floor}
+
+\begin{enumerate}
+    \item Fix all conditions (constant temperature)
+    \item Take N measurements (100+)
+    \item Compute $\sigma_\tau$ = std dev of measured TOF
+    \item Convert to equivalent temperature noise:
+    $$\sigma_T = \sigma_\tau \cdot \frac{c_0^2}{0.6 \cdot d}$$
+    \item Compare $\sigma_T$ to 0.1$^\circ$C target
+\end{enumerate}
+
+This characterizes the \textbf{noise floor} of the system. If $\sigma_T > 0.1^\circ$C, options are:
+\begin{itemize}
+    \item Longer path length
+    \item More averaging per measurement
+    \item Better correlation method (GCC-PHAT vs standard)
+    \item Different input waveform (optimized pulse)
+\end{itemize}
+
+\subsection{Approach}
+
+\subsubsection{Input Waveforms to Test}
+
+Compare TOF resolution across different input pulses:
+
+\begin{enumerate}
+    \item \textbf{Gaussian $\sigma$=2 cycles} --- narrow, sharp, may have lower SNR
+    \item \textbf{Gaussian $\sigma$=5 cycles} --- baseline, broader but higher energy
+    \item \textbf{Gaussian $\sigma$=10 cycles} --- wide, high energy but potentially worse resolution
+    \item \textbf{Bayesian-optimized pulse} --- from \texttt{bayesian\_optimizer\_state.npz}, achieved 38\% FWHM reduction
+\end{enumerate}
+
+Hypothesis: narrower pulses $\rightarrow$ sharper correlation peak $\rightarrow$ better TOF resolution, but may trade off SNR.
+
+\subsubsection{Template Creation}
+\begin{enumerate}
+    \item Send chosen input pulse to piezo
+    \item Record 10 consecutive measurements
+    \item Average to create template $h[n]$ --- averaging reduces noise while preserving coherent signal
+\end{enumerate}
+
+\subsubsection{TOF Measurement via Matched Filtering}
+Cross-correlate template with new measurement:
+
+$$R_{hs}[\tau] = \sum_n h[n] \cdot s[n + \tau]$$
+
+Peak location gives time delay. For sub-sample precision, fit parabola to peak neighborhood.
+
+\subsubsection{GCC-PHAT Option}
+Generalized Cross-Correlation with Phase Transform:
+
+$$R_{\text{PHAT}}[\tau] = \mathcal{F}^{-1}\left\{ \frac{H^*(f) S(f)}{|H^*(f) S(f)|} \right\}$$
+
+Whitens spectrum $\rightarrow$ sharper peak, but may amplify noise outside 40kHz band. \textbf{Implement both, compare.}
+
+\subsubsection{GCC-PHAT Peak Ambiguity Problem}
+
+\textbf{Issue:} Pure GCC-PHAT produces impulse-like peaks where the true TOF peak may be only 1--2 samples wide, while noise spikes elsewhere can have comparable amplitude. In the raw data analysis, we observed spurious peaks at $\sim$630 $\mu$s with amplitude comparable to the true peak at $\sim$591 $\mu$s.
+
+\textbf{Risk:} Peak detection could lock onto wrong maximum, causing catastrophic TOF errors (tens of $\mu$s instead of sub-$\mu$s precision).
+
+\textbf{Mitigation strategies to evaluate:}
+
+\begin{enumerate}
+    \item \textbf{Two-stage hybrid approach} (recommended)
+    \begin{itemize}
+        \item Stage 1: Standard xcorr to find coarse peak location (robust, unambiguous)
+        \item Stage 2: GCC-PHAT within $\pm$200 $\mu$s window of Stage 1 result (sharp, precise)
+        \item Benefits: Gets robustness of xcorr + precision of PHAT
+    \end{itemize}
+
+    \item \textbf{Weighted GCC-PHAT (PHAT-$\beta$)}
+    \begin{itemize}
+        \item Partial whitening: \texttt{weight = |X|$^\beta$} where $0 < \beta < 1$
+        \item $\beta \approx 0.3$--$0.5$ trades off some sharpness for reduced noise sensitivity
+        \item Tune $\beta$ empirically for best robustness/precision tradeoff
+    \end{itemize}
+
+    \item \textbf{Peak-to-sidelobe ratio (PSR) gating}
+    \begin{itemize}
+        \item Compute ratio: main\_peak / second\_highest\_peak
+        \item Reject measurements where PSR $<$ threshold (e.g., $< 1.5$)
+        \item Flags ambiguous cases for re-measurement or fallback to xcorr
+    \end{itemize}
+
+    \item \textbf{Constrained search} (if prior knowledge available)
+    \begin{itemize}
+        \item Only search for peak within expected TOF $\pm$ margin
+        \item Requires stable setup or tracking of previous measurements
+    \end{itemize}
+\end{enumerate}
+
+\textbf{Evaluation criteria:}
+\begin{itemize}
+    \item Repeatability ($\sigma_\tau$) under static conditions
+    \item Robustness: \% of measurements with PSR $>$ threshold
+    \item Accuracy: mean offset from expected value
+\end{itemize}
+
+\subsubsection{Temperature Calculation}
+Given TOF shift $\Delta\tau$ relative to template:
+
+$$\Delta T = \frac{c_0^2}{0.6 \cdot d} \cdot \Delta\tau$$
+
+where $d$ is path length, $c_0 \approx 343$ m/s at 20$^\circ$C.
+
+\subsection{Implementation}
+
+\subsubsection{New file: \texttt{agilent\_project/tof\_temperature\_monitor.py}}
+
+\begin{lstlisting}[language=Python]
+class TOFTemperatureMonitor:
+    def __init__(self, path_length_m, reference_temp_c=20.0):
+        self.path_length = path_length_m  # Round-trip distance
+        self.T_ref = reference_temp_c
+        self.template = None
+        self.template_tof = None  # Absolute TOF of template
+
+    def create_template(self, n_avg=10):
+        """Record n_avg pulses, average to create template."""
+
+    def measure_tof(self, method='xcorr'):
+        """Measure absolute TOF using cross-correlation.
+        method: 'xcorr' (standard) or 'gcc-phat'
+        Returns: TOF in seconds
+        """
+
+    def tof_to_delta_temp(self, tof_s):
+        """Convert TOF to temperature change from reference."""
+
+    def run_repeatability_test(self, n_measurements=100):
+        """Take N measurements, compute statistics."""
+\end{lstlisting}
+
+\subsubsection{Key functions}
+
+\begin{enumerate}
+    \item \texttt{gcc\_phat(template, signal, fs)} --- GCC-PHAT cross-correlation
+    \item \texttt{xcorr\_peak(template, signal)} --- Standard cross-corr with parabolic interpolation
+    \item \texttt{parabolic\_interpolation(y)} --- Sub-sample peak refinement from 3 points
+\end{enumerate}
+
+\subsubsection{Reuse from existing code}
+
+\begin{itemize}
+    \item \texttt{bayesian\_optimizer.py}: Hardware connection (\texttt{connect}, \texttt{record}, \texttt{extract\_envelope}), bandpass filter
+    \item \texttt{agilent\_33220a.py}: \texttt{output\_arbitrary()}, \texttt{generate\_gaussian\_pulse()}
+    \item Saved optimized waveform: \texttt{bayesian\_optimizer\_state.npz} $\rightarrow$ \texttt{best\_waveform}
+\end{itemize}
+
+\subsubsection{Recording parameters for reflector setup}
+
+\begin{itemize}
+    \item \textbf{Recording duration:} 15 ms (captures 8.2 ms TOF + margin)
+    \item \textbf{Settling time:} 200 ms (let AWG stabilize)
+    \item \textbf{Rep rate:} 50 Hz (20 ms period) --- ensures return pulse (8.2 ms) arrives well before next transmit
+    \item \textbf{Waveform points:} 4000 @ 200 kSa/s effective rate (or adjust to achieve 20 ms period)
+\end{itemize}
+
+\subsection{Files to create}
+
+\begin{enumerate}
+    \item \textbf{Create} \texttt{agilent\_project/tof\_temperature\_monitor.py}
+\end{enumerate}
+
+\subsection{Verification}
+
+\begin{enumerate}
+    \item \textbf{Signal detection:} Verify reflected pulse is visible above noise floor
+    \item \textbf{Template creation:} Record 10 measurements, verify averaging reduces noise
+    \item \textbf{Static repeatability:} Create template, take 50--100 measurements, compute $\sigma_\tau$
+    \item \textbf{Known displacement (optional):} Move reflector 10cm $\rightarrow$ expect 582 $\mu$s shift (20cm round-trip / 343 m/s)
+    \item \textbf{GCC-PHAT vs standard:} Compare peak sharpness and repeatability
+    \item \textbf{Waveform comparison:} Test input waveforms ($\sigma$=5 baseline, Bayesian-optimized), report:
+    \begin{itemize}
+        \item Correlation peak width
+        \item Repeatability (std dev of TOF)
+        \item SNR of correlation peak
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Expected Outcomes}
+
+\subsubsection{Primary deliverable: TOF repeatability characterization}
+
+For each configuration (waveform $\times$ correlation method), report:
+\begin{itemize}
+    \item $\sigma_\tau$ (TOF std dev in $\mu$s)
+    \item $\sigma_T$ (equivalent temperature noise in $^\circ$C, given 2m path)
+    \item Pass/fail vs 0.1$^\circ$C target
+\end{itemize}
+
+\subsubsection{Success criteria}
+\begin{itemize}
+    \item At least one configuration achieves $\sigma_T < 0.1^\circ$C
+    \item With 2.812m path, need $\sigma_\tau < 1.43$ $\mu$s for 0.1$^\circ$C resolution
+\end{itemize}
+
+\subsubsection{Expected TOF}
+\begin{itemize}
+    \item Round-trip 2.812m at 343 m/s $\rightarrow$ \textbf{$\sim$8.2 ms} expected arrival time
+    \item Recording duration: 15 ms to capture pulse with margin
+\end{itemize}
+
+\subsubsection{Output}
+\begin{itemize}
+    \item Table comparing waveform/method combinations
+    \item Recommendation for final system configuration
+    \item Plots: correlation peaks, TOF time series, histogram of TOF measurements
+\end{itemize}
+
+\end{document}

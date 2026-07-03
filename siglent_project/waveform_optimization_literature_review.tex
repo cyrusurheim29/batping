@@ -1,0 +1,409 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{cite}
+
+\title{Waveform Optimization for Ultrasonic Time-of-Flight Measurement: \\
+A Literature Review and Methodological Summary}
+\author{BATPING Project Notes}
+\date{June 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document summarizes established techniques for optimizing ultrasonic time-of-flight (TOF) measurements, with particular focus on waveform design strategies that improve temporal resolution beyond simple Gaussian-modulated pulses. We review pulse compression techniques, pseudo-random sequences, and their mathematical foundations, providing context for future optimization efforts in the BATPING acoustic thermometry system.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{Introduction and Motivation}
+%==============================================================================
+
+The BATPING system measures air temperature via the speed of sound, which varies with temperature according to:
+\begin{equation}
+c(T) = 331.3\sqrt{1 + \frac{T}{273.15}} \approx 331.3 + 0.6T \quad \text{[m/s]}
+\end{equation}
+where $T$ is temperature in Celsius. For a fixed acoustic path of length $d$, the time-of-flight is:
+\begin{equation}
+\tau = \frac{d}{c(T)}
+\end{equation}
+
+Temperature precision is fundamentally limited by TOF measurement precision:
+\begin{equation}
+\sigma_T = \frac{c_0^2}{0.6 \cdot d} \cdot \sigma_\tau
+\end{equation}
+where $\sigma_\tau$ is the standard deviation of TOF measurements and $c_0 \approx 343$ m/s.
+
+For our 2-meter round-trip path, achieving 0.1°C precision requires $\sigma_\tau < 1.0$ $\mu$s. This motivates the search for waveforms that produce sharp, unambiguous correlation peaks for precise TOF estimation.
+
+\subsection{Current Approach and Limitations}
+
+Our current optimization uses a parameterized Gaussian pulse with pre- and post-compensation:
+\begin{equation}
+x(t) = \underbrace{e^{-\frac{(t-t_0)^2}{2\sigma_t^2}} \sin(2\pi f_c t + \phi)}_{\text{main pulse}} + \underbrace{\sum_{k} a_k^{\text{pre}} g_k(t)}_{\text{pre-compensation}} + \underbrace{\sum_{j} a_j^{\text{post}} g_j(t)}_{\text{post-compensation}}
+\end{equation}
+
+Bayesian optimization over 10 parameters achieved:
+\begin{itemize}
+    \item Baseline (Gaussian, $\sigma = 5$ cycles): 443 $\mu$s autocorrelation FWHM
+    \item Optimized V3 ($\sigma = 1.93$ cycles): 275 $\mu$s autocorrelation FWHM
+    \item \textbf{Improvement: 38\%}
+\end{itemize}
+
+Further improvement within this parameterization appears limited. The optimizer consistently converges to $\sigma \approx 2$ carrier cycles regardless of iteration count, suggesting this is the global optimum for Gaussian-based waveforms given the piezoelectric transducer's transfer function.
+
+%==============================================================================
+\section{Pulse Compression Fundamentals}
+%==============================================================================
+
+\subsection{The Matched Filter}
+
+For a transmitted signal $x(t)$, the optimal receiver for detecting the signal in additive white Gaussian noise is the \textbf{matched filter}, with impulse response:
+\begin{equation}
+h(t) = x^*(T - t)
+\end{equation}
+where $T$ is the signal duration and $^*$ denotes complex conjugation. The matched filter output is the autocorrelation of the transmitted signal:
+\begin{equation}
+y(\tau) = \int_{-\infty}^{\infty} x(t) x^*(t - \tau) \, dt = R_{xx}(\tau)
+\end{equation}
+
+The peak of $R_{xx}(\tau)$ occurs at $\tau = 0$ (or at the true time delay for a delayed signal), and its \textbf{full-width at half-maximum (FWHM)} determines the temporal resolution of the TOF measurement.
+
+\subsection{Time-Bandwidth Product and Processing Gain}
+
+The fundamental result of pulse compression is that temporal resolution is determined not by pulse duration $T$, but by signal bandwidth $B$:
+\begin{equation}
+\Delta \tau \approx \frac{1}{B}
+\end{equation}
+
+The \textbf{processing gain} quantifies the improvement in signal-to-noise ratio (SNR) achieved by matched filtering:
+\begin{equation}
+G_p = T \cdot B
+\end{equation}
+where $T$ is the pulse duration and $B$ is the signal bandwidth. This is the \textbf{time-bandwidth product}.
+
+For a simple Gaussian pulse, $T \cdot B \approx 1$ (the uncertainty principle limit). Pulse compression techniques achieve $T \cdot B \gg 1$ by spreading energy over time while maintaining bandwidth, enabling:
+\begin{itemize}
+    \item Higher total transmitted energy (longer pulse)
+    \item Fine temporal resolution (wide bandwidth)
+    \item Improved SNR (processing gain)
+\end{itemize}
+
+Expressed in decibels:
+\begin{equation}
+G_p \text{ [dB]} = 10 \log_{10}(T \cdot B)
+\end{equation}
+
+%==============================================================================
+\section{Linear Frequency Modulation (Chirp)}
+%==============================================================================
+
+\subsection{Signal Definition}
+
+A \textbf{linear frequency modulated (LFM)} signal, or ``chirp,'' sweeps frequency linearly over the pulse duration:
+\begin{equation}
+x(t) = A(t) \cos\left(2\pi f_0 t + \pi \mu t^2\right), \quad 0 \leq t \leq T
+\end{equation}
+where:
+\begin{itemize}
+    \item $A(t)$ is the amplitude envelope (often rectangular or windowed)
+    \item $f_0$ is the starting frequency
+    \item $\mu = \Delta f / T$ is the chirp rate [Hz/s]
+    \item $\Delta f = f_1 - f_0$ is the frequency sweep (bandwidth)
+    \item $T$ is the pulse duration
+\end{itemize}
+
+The instantaneous frequency is:
+\begin{equation}
+f(t) = f_0 + \mu t = f_0 + \frac{\Delta f}{T} t
+\end{equation}
+
+\subsection{Autocorrelation Properties}
+
+The autocorrelation of a rectangular-envelope LFM chirp approximates a sinc function:
+\begin{equation}
+R_{xx}(\tau) \approx T \cdot \text{sinc}(\Delta f \cdot \tau) \cdot \cos(2\pi f_c \tau)
+\end{equation}
+where $f_c = f_0 + \Delta f/2$ is the center frequency.
+
+The main lobe width (FWHM) is:
+\begin{equation}
+\Delta \tau_{3\text{dB}} \approx \frac{0.89}{\Delta f} = \frac{0.89}{B}
+\end{equation}
+
+\subsection{Sidelobe Considerations}
+
+The sinc function has sidelobes at $-13.2$ dB below the main peak. For ranging applications, high sidelobes can cause false target detection. \textbf{Windowing} (amplitude tapering) reduces sidelobes at the cost of main lobe broadening:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Window} & \textbf{Peak Sidelobe [dB]} & \textbf{Main Lobe Broadening} \\
+\midrule
+Rectangular & $-13.2$ & $1.0\times$ \\
+Hamming & $-42.7$ & $1.50\times$ \\
+Hann & $-31.5$ & $1.50\times$ \\
+Blackman & $-58.1$ & $1.68\times$ \\
+Kaiser ($\beta=6$) & $-44.0$ & $1.52\times$ \\
+\bottomrule
+\end{tabular}
+\caption{Window functions and their sidelobe/resolution trade-offs}
+\end{table}
+
+\subsection{Nonlinear Frequency Modulation (NLFM)}
+
+\textbf{Nonlinear frequency modulation} achieves low sidelobes without windowing by designing the frequency sweep $f(t)$ to produce an inherently tapered spectrum. The instantaneous frequency follows a nonlinear function:
+\begin{equation}
+f(t) = f_0 + g(t) \cdot \Delta f
+\end{equation}
+where $g(t)$ is designed (often via numerical optimization) to produce the desired spectral shape. NLFM avoids the SNR loss associated with amplitude windowing.
+
+%==============================================================================
+\section{Pseudo-Random Sequences}
+%==============================================================================
+
+\subsection{Motivation: Why Randomness Helps}
+
+A periodic signal $x(t) = \sin(2\pi f_c t)$ has autocorrelation:
+\begin{equation}
+R_{xx}(\tau) = \frac{1}{2}\cos(2\pi f_c \tau)
+\end{equation}
+which oscillates indefinitely---there is no unique peak, making precise timing impossible.
+
+A \textbf{pseudo-random sequence (PRS)} is designed to have autocorrelation approximating the Dirac delta function:
+\begin{equation}
+R_{xx}(\tau) \approx \begin{cases}
+N & \tau = 0 \\
+\epsilon & \tau \neq 0
+\end{cases}
+\end{equation}
+where $N$ is the sequence length and $\epsilon \ll N$ represents small sidelobes. This sharp peak enables precise time-delay estimation.
+
+\subsection{The Wiener-Khinchin Theorem}
+
+The autocorrelation function and power spectral density (PSD) form a Fourier transform pair:
+\begin{equation}
+R_{xx}(\tau) \xleftrightarrow{\mathcal{F}} S_{xx}(f)
+\end{equation}
+
+A flat (white) power spectrum corresponds to an impulsive autocorrelation:
+\begin{equation}
+S_{xx}(f) = \text{constant} \quad \Longleftrightarrow \quad R_{xx}(\tau) = \delta(\tau)
+\end{equation}
+
+Pseudo-random sequences are designed to have approximately flat spectra over their bandwidth, yielding sharp autocorrelation peaks.
+
+\subsection{Maximum Length Sequences (MLS)}
+
+An \textbf{MLS} or \textbf{m-sequence} is generated by a linear feedback shift register (LFSR) of $n$ stages:
+\begin{equation}
+\text{Length: } N = 2^n - 1
+\end{equation}
+
+The sequence $\{a_k\} \in \{+1, -1\}$ has periodic autocorrelation:
+\begin{equation}
+R_{aa}[m] = \sum_{k=0}^{N-1} a_k \cdot a_{k+m} = \begin{cases}
+N & m = 0 \mod N \\
+-1 & m \neq 0 \mod N
+\end{cases}
+\end{equation}
+
+Properties:
+\begin{itemize}
+    \item \textbf{Balance}: Nearly equal numbers of $+1$ and $-1$ (differ by 1)
+    \item \textbf{Run property}: Runs of consecutive identical symbols have specific length distribution
+    \item \textbf{Shift-and-add}: XOR of an MLS with a cyclic shift produces another cyclic shift
+\end{itemize}
+
+Peak-to-sidelobe ratio: $N : 1$ or $20\log_{10}(N)$ dB.
+
+\subsection{Barker Codes}
+
+\textbf{Barker codes} are binary sequences with optimal aperiodic autocorrelation---all sidelobes have magnitude $\leq 1$:
+\begin{equation}
+|R_{aa}[m]| \leq 1 \quad \text{for } m \neq 0
+\end{equation}
+
+Known Barker codes exist only for lengths $N \in \{2, 3, 4, 5, 7, 11, 13\}$:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{cl}
+\toprule
+\textbf{Length} & \textbf{Code} \\
+\midrule
+2 & $+1, -1$ \\
+3 & $+1, +1, -1$ \\
+4 & $+1, +1, -1, +1$ \\
+5 & $+1, +1, +1, -1, +1$ \\
+7 & $+1, +1, +1, -1, -1, +1, -1$ \\
+11 & $+1, +1, +1, -1, -1, -1, +1, -1, -1, +1, -1$ \\
+13 & $+1, +1, +1, +1, +1, -1, -1, +1, +1, -1, +1, -1, +1$ \\
+\bottomrule
+\end{tabular}
+\caption{Known Barker codes}
+\end{table}
+
+The Barker-13 code achieves $-22.3$ dB peak sidelobe level, making it excellent for ranging despite its limited length.
+
+\subsection{Golay Complementary Sequences}
+
+\textbf{Golay complementary pairs} $(A, B)$ are sequences whose aperiodic autocorrelations sum to zero for all non-zero lags:
+\begin{equation}
+R_{AA}[m] + R_{BB}[m] = \begin{cases}
+2N & m = 0 \\
+0 & m \neq 0
+\end{cases}
+\end{equation}
+
+This provides \textbf{theoretically perfect} (zero sidelobe) correlation at the cost of requiring two transmissions. Golay pairs exist for lengths $N = 2^k \cdot 10^j \cdot 26^l$ for non-negative integers $j, k, l$.
+
+\subsection{Processing Gain for Coded Sequences}
+
+For a sequence of length $N$ chips, the processing gain is:
+\begin{equation}
+G_p = N
+\end{equation}
+
+In decibels:
+\begin{equation}
+G_p \text{ [dB]} = 10\log_{10}(N)
+\end{equation}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccc}
+\toprule
+\textbf{Code Length} & \textbf{Processing Gain} & \textbf{[dB]} \\
+\midrule
+13 (Barker) & $13\times$ & 11.1 \\
+31 (MLS, $n=5$) & $31\times$ & 14.9 \\
+127 (MLS, $n=7$) & $127\times$ & 21.0 \\
+255 (MLS, $n=8$) & $255\times$ & 24.1 \\
+\bottomrule
+\end{tabular}
+\caption{Processing gain for various code lengths}
+\end{table}
+
+%==============================================================================
+\section{Implementation Considerations}
+%==============================================================================
+
+\subsection{Bandwidth Constraints}
+
+The achievable temporal resolution is limited by the system bandwidth, which includes:
+\begin{enumerate}
+    \item \textbf{Transducer bandwidth}: Piezoelectric elements have resonant behavior; our 40 kHz transducers likely have $\sim$5-10 kHz usable bandwidth.
+    \item \textbf{Analog-to-digital converter (ADC) bandwidth}: Our 384 kHz sampling supports up to 192 kHz signal bandwidth (Nyquist).
+    \item \textbf{Atmospheric absorption}: Higher frequencies attenuate more rapidly in air.
+\end{enumerate}
+
+The transducer is typically the limiting factor. If bandwidth $B = 10$ kHz, the minimum achievable resolution is:
+\begin{equation}
+\Delta \tau_{\min} \approx \frac{1}{B} = \frac{1}{10\text{ kHz}} = 100 \text{ }\mu\text{s}
+\end{equation}
+
+\subsection{Multipath Constraints}
+
+For pseudo-random sequences, the code duration must not exceed the multipath-free window:
+\begin{equation}
+T_{\text{code}} = N \cdot T_{\text{chip}} < \Delta \tau_{\text{multipath}}
+\end{equation}
+
+If reflections arrive 5 ms after the direct path, and we use Barker-13 with 100 $\mu$s chips:
+\begin{equation}
+T_{\text{code}} = 13 \times 100 \text{ }\mu\text{s} = 1.3 \text{ ms} < 5 \text{ ms} \quad \checkmark
+\end{equation}
+
+\subsection{Carrier Modulation}
+
+For bandpass systems (like our 40 kHz carrier), the binary code modulates the carrier via \textbf{binary phase-shift keying (BPSK)}:
+\begin{equation}
+x(t) = \sum_{k=0}^{N-1} a_k \cdot p(t - kT_c) \cdot \cos(2\pi f_c t)
+\end{equation}
+where:
+\begin{itemize}
+    \item $a_k \in \{+1, -1\}$ is the $k$-th code chip
+    \item $p(t)$ is the chip pulse shape (rectangular, raised cosine, etc.)
+    \item $T_c$ is the chip duration
+    \item $f_c$ is the carrier frequency
+\end{itemize}
+
+The $+1/-1$ values correspond to 0° and 180° carrier phase, respectively.
+
+%==============================================================================
+\section{Comparison of Techniques}
+%==============================================================================
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccl}
+\toprule
+\textbf{Technique} & \textbf{Processing Gain} & \textbf{Sidelobes} & \textbf{Complexity} & \textbf{Best For} \\
+\midrule
+Gaussian pulse & $\sim 1$ & N/A & Low & Baseline \\
+LFM chirp & $T \cdot B$ (20--30) & $-13$ to $-50$ dB & Medium & General use \\
+NLFM chirp & $T \cdot B$ & Low (designed) & High & Low sidelobes \\
+Barker-13 & 13 (11 dB) & $-22$ dB & Low & Simple, robust \\
+MLS-127 & 127 (21 dB) & $-42$ dB & Medium & High gain \\
+Golay pairs & $N$ (arbitrary) & 0 (perfect) & Medium & Precision \\
+\bottomrule
+\end{tabular}
+\caption{Comparison of pulse compression techniques}
+\end{table}
+
+%==============================================================================
+\section{Key References}
+%==============================================================================
+
+\subsection{Foundational Papers}
+
+\begin{enumerate}
+    \item \textbf{O'Donnell, M.} (1992). ``Coded excitation system for improving the penetration of real-time phased-array imaging systems.'' \textit{IEEE Transactions on Ultrasonics, Ferroelectrics, and Frequency Control}. --- Foundational work on coded excitation for ultrasonic imaging.
+
+    \item \textbf{Misaridis, T. and Jensen, J.A.} (2005). ``Use of modulated excitation signals in medical ultrasound.'' \textit{Ultrasonics}. --- Comprehensive review of chirps and codes in medical ultrasound; reports 12--18 dB improvement.
+
+    \item \textbf{Gan, T.H., Hutchins, D.A., et al.} (2001). ``The use of broadband acoustic transducers and pulse-compression techniques for air-coupled ultrasonic imaging.'' \textit{Ultrasonics}. --- Air-coupled chirp ultrasonics.
+
+    \item \textbf{Pollakowski, M. and Ermert, H.} (1994). ``Chirp signal matching and signal power optimization in pulse-echo mode ultrasonic nondestructive testing.'' \textit{IEEE TUFFC}. --- NLFM pulse compression.
+\end{enumerate}
+
+\subsection{Temperature Measurement}
+
+\begin{enumerate}
+    \item \textbf{Khyam, M.O., et al.} (2016). ``Highly accurate time-of-flight measurement technique based on phase-correlation for ultrasonic ranging.'' \textit{IEEE Sensors Journal}. --- Phase-correlation for precise TOF.
+
+    \item \textbf{Tsai, W.Y., et al.} (2005, 2006). ``Multi-frequency continuous wave ultrasonic thermometry.'' --- Addresses acoustic attenuation errors.
+\end{enumerate}
+
+\subsection{Educational Resources}
+
+\begin{itemize}
+    \item Wikipedia: ``Maximum length sequence,'' ``Barker code,'' ``Pulse compression,'' ``Matched filter''
+    \item \url{https://www.radartutorial.eu/08.transmitters/Intrapulse\%20Modulation.en.html}
+\end{itemize}
+
+%==============================================================================
+\section{Recommendations for BATPING}
+%==============================================================================
+
+Given the current system constraints (40 kHz carrier, $\sim$5--10 kHz transducer bandwidth, 2 m path with potential multipath), we recommend exploring:
+
+\begin{enumerate}
+    \item \textbf{LFM chirp}: Most proven approach. Sweep 35--45 kHz over 1--2 ms. Expected improvement: 10--15 dB processing gain, $\sim$100 $\mu$s resolution.
+
+    \item \textbf{Barker-13 BPSK}: Simple to implement. Each chip = 2--4 carrier cycles (50--100 $\mu$s). Total duration $\sim$1 ms. Guaranteed $-22$ dB sidelobes.
+
+    \item \textbf{Golay complementary pairs}: If sidelobes are critical and two-transmission protocol is acceptable. Theoretically perfect autocorrelation.
+
+    \item \textbf{Transducer characterization}: Measure the piezo impulse response to determine actual usable bandwidth---this fundamentally limits achievable resolution regardless of waveform choice.
+\end{enumerate}
+
+\end{document}

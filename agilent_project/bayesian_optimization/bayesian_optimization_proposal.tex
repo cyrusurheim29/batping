@@ -1,0 +1,270 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{bm}
+\usepackage{fancybox}
+\usepackage{enumitem}
+
+\pagestyle{plain}
+
+\begin{document}
+
+\begin{center}
+\textbf{\Large BAYESIAN OPTIMIZATION FOR PULSE SHAPING}
+\end{center}
+
+\vspace{0.5em}
+
+\noindent
+We consider the same experimental system as before: a function generator sends an input waveform $f(t)$ to a piezo array, and a microphone records the acoustic output $y(t) = S[f](t)$.
+The goal remains to find an input waveform that produces a narrow, high-amplitude output pulse.
+
+\vspace{1em}
+\begin{center}
+\textbf{Limitations of the local tangent method}
+\end{center}
+
+The iterative local tangent method requires estimating the Jacobian matrix $K_n$ at each iteration.
+For an input with $N$ samples, this requires $N$ perturbation experiments per iteration.
+If $N = 270$ and each measurement takes 1 second, one Jacobian estimate requires approximately 5 minutes.
+
+Additionally, the local linear approximation
+\[
+S(\mathbf{f}^{(n)} + \Delta\mathbf{f}) \approx S(\mathbf{f}^{(n)}) + K_n \Delta\mathbf{f}
+\]
+is only valid for small $\Delta\mathbf{f}$.
+If the system is strongly nonlinear, the optimizer may take many small steps, each requiring a new Jacobian estimate.
+
+\vspace{1em}
+\begin{center}
+\textbf{An alternative: learning a global surrogate}
+\end{center}
+
+Instead of estimating the local tangent at each iteration, we can build a \emph{global model} of the system's behavior.
+Rather than modeling the full waveform-to-waveform map $S$, we model the scalar objective function directly.
+
+Define the objective
+\[
+J(\bm{\theta}) = \text{FWHM}(S(f_{\bm{\theta}})),
+\]
+where $f_{\bm{\theta}}$ is a waveform parameterized by a low-dimensional vector $\bm{\theta} \in \mathbb{R}^d$.
+
+\begin{center}
+\fbox{The goal is to find $\bm{\theta}^* = \arg\min_{\bm{\theta}} J(\bm{\theta})$.}
+\end{center}
+
+\vspace{1em}
+\begin{center}
+\textbf{Parameterizing the input waveform}
+\end{center}
+
+Rather than optimizing all $N$ input samples independently, we parameterize the waveform with a small number of physically meaningful parameters.
+A natural choice is:
+
+\[
+f_{\bm{\theta}}(t) = A \exp\left[-\frac{(t - t_c)^2}{2\sigma^2}\right] \cos(2\pi f_0 t + \phi) + \sum_{k=1}^{K} c_k \, g_k(t),
+\]
+where:
+\begin{itemize}[nosep]
+    \item $A$ is the amplitude,
+    \item $t_c$ is the pulse center,
+    \item $\sigma$ controls the envelope width,
+    \item $f_0$ is the carrier frequency (fixed at 40 kHz),
+    \item $\phi$ is the carrier phase,
+    \item $c_k$ are coefficients for compensation basis functions $g_k(t)$.
+\end{itemize}
+
+The compensation functions $g_k(t)$ can be chosen to allow pre-pulse excitation or post-pulse ringdown cancellation.
+A simple choice is windowed sinusoids at the carrier frequency, placed before and after the main pulse.
+
+This gives a parameter vector
+\[
+\bm{\theta} = (A, t_c, \sigma, \phi, c_1, \ldots, c_K)^T \in \mathbb{R}^{d},
+\]
+where $d = 4 + K$ is typically between 5 and 15.
+
+\vspace{1em}
+\begin{center}
+\textbf{Gaussian process surrogate model}
+\end{center}
+
+We model the unknown objective function $J(\bm{\theta})$ as a \emph{Gaussian process} (GP):
+\[
+J(\bm{\theta}) \sim \mathcal{GP}(m(\bm{\theta}), k(\bm{\theta}, \bm{\theta}')).
+\]
+Here $m(\bm{\theta})$ is the mean function (often taken to be zero or a constant), and $k(\bm{\theta}, \bm{\theta}')$ is the covariance kernel.
+
+A common choice is the squared exponential (RBF) kernel:
+\[
+k(\bm{\theta}, \bm{\theta}') = \sigma_f^2 \exp\left(-\frac{\|\bm{\theta} - \bm{\theta}'\|^2}{2\ell^2}\right),
+\]
+where $\sigma_f^2$ is the signal variance and $\ell$ is the length scale.
+The Mat\'{e}rn kernel is another popular choice that allows rougher functions.
+
+Given observations $\mathcal{D}_n = \{(\bm{\theta}_i, y_i)\}_{i=1}^{n}$ where $y_i = J(\bm{\theta}_i) + \epsilon_i$ and $\epsilon_i \sim \mathcal{N}(0, \sigma_n^2)$, the posterior distribution at a new point $\bm{\theta}_*$ is Gaussian:
+\[
+J(\bm{\theta}_*) \mid \mathcal{D}_n \sim \mathcal{N}(\mu_n(\bm{\theta}_*), \sigma_n^2(\bm{\theta}_*)),
+\]
+with
+\begin{align}
+\mu_n(\bm{\theta}_*) &= \mathbf{k}_*^T (K + \sigma_n^2 I)^{-1} \mathbf{y}, \\
+\sigma_n^2(\bm{\theta}_*) &= k(\bm{\theta}_*, \bm{\theta}_*) - \mathbf{k}_*^T (K + \sigma_n^2 I)^{-1} \mathbf{k}_*,
+\end{align}
+where $\mathbf{k}_* = [k(\bm{\theta}_*, \bm{\theta}_1), \ldots, k(\bm{\theta}_*, \bm{\theta}_n)]^T$ and $K_{ij} = k(\bm{\theta}_i, \bm{\theta}_j)$.
+
+\begin{center}
+\fbox{\parbox{0.85\textwidth}{
+The GP provides both a prediction $\mu_n(\bm{\theta})$ and an uncertainty estimate $\sigma_n(\bm{\theta})$.
+Regions with few observations have high uncertainty; regions with many observations have low uncertainty.
+}}
+\end{center}
+
+\vspace{1em}
+\begin{center}
+\textbf{Acquisition function}
+\end{center}
+
+At each iteration, we must decide where to sample next.
+The \emph{acquisition function} $\alpha(\bm{\theta})$ balances two goals:
+\begin{itemize}[nosep]
+    \item \textbf{Exploitation}: sample where $\mu_n(\bm{\theta})$ is low (likely good),
+    \item \textbf{Exploration}: sample where $\sigma_n(\bm{\theta})$ is high (uncertain).
+\end{itemize}
+
+A popular choice is \emph{Expected Improvement} (EI).
+Let $J_{\min} = \min_{i \leq n} y_i$ be the best observation so far.
+The improvement at $\bm{\theta}$ is
+\[
+I(\bm{\theta}) = \max(0, J_{\min} - J(\bm{\theta})).
+\]
+Taking the expectation over the GP posterior:
+\[
+\alpha_{\text{EI}}(\bm{\theta}) = \mathbb{E}[I(\bm{\theta}) \mid \mathcal{D}_n].
+\]
+This has a closed form:
+\[
+\boxed{
+\alpha_{\text{EI}}(\bm{\theta}) = (J_{\min} - \mu_n(\bm{\theta})) \, \Phi(Z) + \sigma_n(\bm{\theta}) \, \phi(Z),
+}
+\]
+where
+\[
+Z = \frac{J_{\min} - \mu_n(\bm{\theta})}{\sigma_n(\bm{\theta})},
+\]
+and $\Phi$, $\phi$ are the standard normal CDF and PDF, respectively.
+
+The next sample point is chosen by maximizing the acquisition function:
+\[
+\bm{\theta}_{n+1} = \arg\max_{\bm{\theta}} \alpha_{\text{EI}}(\bm{\theta}).
+\]
+
+\vspace{1em}
+\begin{center}
+\textbf{Complete algorithm}
+\end{center}
+
+\noindent
+\fbox{\parbox{0.95\textwidth}{\ttfamily\small
+\begin{tabbing}
+\hspace{2em}\=\hspace{2em}\=\hspace{2em}\=\kill
+Choose initial samples $\bm{\theta}_1, \ldots, \bm{\theta}_{n_{\text{init}}}$ randomly in bounds.\\[0.3em]
+For $i = 1, \ldots, n_{\text{init}}$:\\
+\> Measure $y_i = J(\bm{\theta}_i)$ \hfill {\rmfamily\textit{(run experiment)}}\\[0.5em]
+For $n = n_{\text{init}}, n_{\text{init}}+1, \ldots$\,:\\[0.3em]
+\> 1. Fit GP to observations $\{(\bm{\theta}_i, y_i)\}_{i=1}^{n}$.\\[0.3em]
+\> 2. Find $\bm{\theta}_{n+1} = \arg\max_{\bm{\theta}} \alpha_{\text{EI}}(\bm{\theta})$.\\[0.3em]
+\> 3. Measure $y_{n+1} = J(\bm{\theta}_{n+1})$. \hfill {\rmfamily\textit{(run experiment)}}\\[0.3em]
+\> 4. Update dataset: $n \leftarrow n + 1$.\\[0.3em]
+\> 5. If $y_{n+1} < y_{\min}$: update $y_{\min}$, $\bm{\theta}_{\text{best}}$.\\[0.3em]
+\> 6. Stop if $n > n_{\max}$ or $y_{\min}$ sufficiently small.\\[0.5em]
+Return $\bm{\theta}_{\text{best}}$, $y_{\min}$.
+\end{tabbing}
+}}
+
+\vspace{1em}
+\begin{center}
+\textbf{Interpretation}
+\end{center}
+
+The algorithm does not require computing the Jacobian of the system.
+Instead, it learns a probabilistic model of how the objective (FWHM) depends on the input parameters.
+
+\begin{center}
+\fbox{\parbox{0.85\textwidth}{
+Each measurement teaches the model about the system globally, not just locally.
+The acquisition function automatically balances exploring uncertain regions and exploiting promising regions.
+}}
+\end{center}
+
+\vspace{1em}
+\begin{center}
+\textbf{Comparison to local tangent method}
+\end{center}
+
+\begin{center}
+\begin{tabular}{l|c|c}
+& \textbf{Local Tangent} & \textbf{Bayesian Optimization} \\
+\hline
+Parameters & $N$ (all samples) & $d \ll N$ (parameterized) \\
+Measurements per iteration & $N$ (for Jacobian) & 1 \\
+Model & Local linear & Global probabilistic \\
+Objective & $\|\mathbf{y} - \mathbf{y}_{\text{target}}\|^2$ & FWHM directly \\
+Handles noise & Via regularization $\lambda$ & Naturally (GP noise model) \\
+Exploration/exploitation & None (greedy) & Automatic (acquisition) \\
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\begin{center}
+\textbf{Practical considerations}
+\end{center}
+
+\textit{1. Number of initial samples.}
+A reasonable starting point is $n_{\text{init}} = 2d$ to $5d$, where $d$ is the parameter dimension.
+For $d = 10$, this means 20--50 initial measurements.
+
+\textit{2. Kernel hyperparameters.}
+The length scale $\ell$ and noise variance $\sigma_n^2$ are typically learned by maximizing the marginal likelihood of the observations.
+Most GP libraries (scikit-learn, GPyTorch) do this automatically.
+
+\textit{3. Bounds on parameters.}
+Each parameter should have physically reasonable bounds:
+\begin{itemize}[nosep]
+    \item Amplitude $A \in [0.1, 1.0]$ (normalized),
+    \item Width $\sigma \in [1, 20]$ cycles,
+    \item Compensation coefficients $c_k \in [-0.5, 0.5]$.
+\end{itemize}
+
+\textit{4. Constraint on amplitude.}
+If the output amplitude must remain above a threshold $A_{\min}$, we can add a penalty:
+\[
+J_{\text{penalized}}(\bm{\theta}) = \text{FWHM} + \lambda \max(0, A_{\min} - A_{\text{output}})^2.
+\]
+
+\textit{5. Expected number of evaluations.}
+Bayesian optimization typically finds good solutions in $10d$ to $50d$ evaluations.
+For $d = 10$ parameters, expect 100--500 measurements total, compared to $N \times (\text{iterations})$ for the local tangent method.
+
+\vspace{1em}
+\begin{center}
+\textbf{When to prefer each method}
+\end{center}
+
+The \textbf{local tangent method} is preferable when:
+\begin{itemize}[nosep]
+    \item The system is nearly linear,
+    \item The target waveform shape is well-defined and achievable,
+    \item Fine control over all $N$ samples is required.
+\end{itemize}
+
+\textbf{Bayesian optimization} is preferable when:
+\begin{itemize}[nosep]
+    \item The objective (e.g., FWHM) is easier to define than a target waveform,
+    \item Measurements are expensive (favors sample efficiency),
+    \item The system is strongly nonlinear or noisy,
+    \item A low-dimensional parameterization captures the relevant physics.
+\end{itemize}
+
+For the present piezo pulse-shaping problem, where the goal is to minimize FWHM subject to an amplitude constraint, and where the local tangent method has shown slow convergence, Bayesian optimization offers a promising alternative.
+
+\end{document}

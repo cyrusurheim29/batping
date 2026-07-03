@@ -1,0 +1,27 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.ipynb_checkpoints/
+
+# ── Raw audio (large binary — manifests/plots/npz are kept) ──────────────────
+*.wav
+*.aiff
+
+# ── Large raw-recording data files (not analysis results) ────────────────────
+siglent_project/bk7_V1.csv
+siglent_project/optimized_analysis.npz
+siglent_project/optimized_recording.npz
+siglent_project/recording_jun8_trial2.npz
+
+# ── Claude Code local tooling (memory, skills, settings) ─────────────────────
+.claude/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Editors ───────────────────────────────────────────────────────────────────
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,336 @@
+{
+  "timestamp": "2026-06-19T11:49:52.519996",
+  "description": "distance_prbs",
+  "hardware": {
+    "sdg": "SDG1062X @ 10.11.13.230",
+    "sdg_sample_rate_hz": 400000,
+    "mic": "Dodotronic UltraMic",
+    "mic_sample_rate_hz": 384000,
+    "carrier_freq_hz": 41350
+  },
+  "measurements": {
+    "distance_37.0cm": {
+      "gaussian": {
+        "tof_us": 10002.604166666666,
+        "expected_tof_us": 2157.4344023323615,
+        "rep_rate_hz": 100.0,
+        "wav": "raw/37.0cm_gaussian.wav"
+      },
+      "optimized_v3": {
+        "tof_us": 17604.166666666668,
+        "expected_tof_us": 2157.4344023323615,
+        "rep_rate_hz": 56.81818181818182,
+        "wav": "raw/37.0cm_optimized_v3.wav"
+      },
+      "barker7_24cyc": {
+        "tof_us": 10002.604166666666,
+        "expected_tof_us": 2157.4344023323615,
+        "rep_rate_hz": 100.0,
+        "wav": "raw/37.0cm_barker7_24cyc.wav"
+      }
+    },
+    "distance_52.0cm": {
+      "gaussian": {
+        "tof_us": 10830.729166666668,
+        "expected_tof_us": 3032.0699708454813,
+        "rep_rate_hz": 92.33610341643583,
+        "wav": "raw/52.0cm_gaussian.wav"
+      },
+      "optimized_v3": {
+        "tof_us": 17604.166666666668,
+        "expected_tof_us": 3032.0699708454813,
+        "rep_rate_hz": 56.81818181818182,
+        "wav": "raw/52.0cm_optimized_v3.wav"
+      },
+      "barker7_24cyc": {
+        "tof_us": 10830.729166666668,
+        "expected_tof_us": 3032.0699708454813,
+        "rep_rate_hz": 92.33610341643583,
+        "wav": "raw/52.0cm_barker7_24cyc.wav"
+      }
+    },
+    "distance_73.0cm": {
+      "gaussian": {
+        "tof_us": 13747.395833333334,
+        "expected_tof_us": 4256.5597667638485,
+        "rep_rate_hz": 72.75372862859221,
+        "wav": "raw/73.0cm_gaussian.wav"
+      },
+      "optimized_v3": {
+        "tof_us": 17604.166666666668,
+        "expected_tof_us": 4256.5597667638485,
+        "rep_rate_hz": 56.81818181818182,
+        "wav": "raw/73.0cm_optimized_v3.wav"
+      },
+      "barker7_24cyc": {
+        "tof_us": 13747.395833333334,
+        "expected_tof_us": 4256.5597667638485,
+        "rep_rate_hz": 72.75372862859221,
+        "wav": "raw/73.0cm_barker7_24cyc.wav"
+      }
+    },
+    "distance_101.0cm": {
+      "gaussian": {
+        "tof_us": 16664.0625,
+        "expected_tof_us": 5889.212827988338,
+        "rep_rate_hz": 60.024009603841534,
+        "wav": "raw/101.0cm_gaussian.wav"
+      },
+      "optimized_v3": {
+        "tof_us": 17601.5625,
+        "expected_tof_us": 5889.212827988338,
+        "rep_rate_hz": 56.81818181818182,
+        "wav": "raw/101.0cm_optimized_v3.wav"
+      },
+      "barker7_24cyc": {
+        "tof_us": 16664.0625,
+        "expected_tof_us": 5889.212827988338,
+        "rep_rate_hz": 60.024009603841534,
+        "wav": "raw/101.0cm_barker7_24cyc.wav"
+      }
+    },
+    "distance_124.0cm": {
+      "gaussian": {
+        "tof_us": 19578.125,
+        "expected_tof_us": 7230.320699708454,
+        "rep_rate_hz": 51.08556832694764,
+        "wav": "raw/124.0cm_gaussian.wav"
+      },
+      "optimized_v3": {
+        "tof_us": 19578.125,
+        "expected_tof_us": 7230.320699708454,
+        "rep_rate_hz": 51.08556832694764,
+        "wav": "raw/124.0cm_optimized_v3.wav"
+      },
+      "barker7_24cyc": {
+        "tof_us": 19578.125,
+        "expected_tof_us": 7230.320699708454,
+        "rep_rate_hz": 51.08556832694764,
+        "wav": "raw/124.0cm_barker7_24cyc.wav"
+      }
+    },
+    "distance_147.0cm": {
+      "gaussian": {
+        "tof_us": 8406.25,
+        "expected_tof_us": 8571.428571428572,
+        "rep_rate_hz": 44.459264199177504,
+        "wav": "raw/147.0cm_gaussian.wav"
+      },
+      "optimized_v3": {
+        "tof_us": 8500.0,
+        "expected_tof_us": 8571.428571428572,
+        "rep_rate_hz": 44.459264199177504,
+        "wav": "raw/147.0cm_optimized_v3.wav"
+      },
+      "barker7_24cyc": {
+        "tof_us": 500.0,
+        "expected_tof_us": 8571.428571428572,
+        "rep_rate_hz": 44.459264199177504,
+        "wav": "raw/147.0cm_barker7_24cyc.wav"
+      }
+    },
+    "distance_176.5cm": {
+      "gaussian": {
+        "tof_us": 9950.520833333334,
+        "expected_tof_us": 10291.545189504373,
+        "rep_rate_hz": 39.35845714847978,
+        "wav": "raw/176.5cm_gaussian.wav"
+      },
+      "optimized_v3": {
+        "tof_us": 10106.770833333334,
+        "expected_tof_us": 10291.545189504373,
+        "rep_rate_hz": 39.35845714847978,
+        "wav": "raw/176.5cm_optimized_v3.wav"
+      },
+      "barker7_24cyc": {
+        "tof_us": 500.0,
+        "expected_tof_us": 10291.545189504373,
+        "rep_rate_hz": 39.35845714847978,
+        "wav": "raw/176.5cm_barker7_24cyc.wav"
+      }
+    },
+    "distance_189.5cm": {
+      "gaussian": {
+        "tof_us": 9437.5,
+        "expected_tof_us": 11049.562682215743,
+        "rep_rate_hz": 35.30761761850119,
+        "wav": "raw/189.5cm_gaussian.wav"
+      },
+      "optimized_v3": {
+        "tof_us": 9455.729166666666,
+        "expected_tof_us": 11049.562682215743,
+        "rep_rate_hz": 35.30761761850119,
+        "wav": "raw/189.5cm_optimized_v3.wav"
+      },
+      "barker7_24cyc": {
+        "tof_us": 1200.5208333333335,
+        "expected_tof_us": 11049.562682215743,
+        "rep_rate_hz": 35.30761761850119,
+        "wav": "raw/189.5cm_barker7_24cyc.wav"
+      }
+    },
+    "distance_213.0cm": {
+      "gaussian": {
+        "tof_us": 12109.375,
+        "expected_tof_us": 12419.825072886297,
+        "rep_rate_hz": 33.2529719843711,
+        "wav": "raw/213.0cm_gaussian.wav"
+      },
+      "optimized_v3": {
+        "tof_us": 10322.916666666666,
+        "expected_tof_us": 12419.825072886297,
+        "rep_rate_hz": 33.2529719843711,
+        "wav": "raw/213.0cm_optimized_v3.wav"
+      },
+      "barker7_24cyc": {
+        "tof_us": 500.0,
+        "expected_tof_us": 12419.825072886297,
+        "rep_rate_hz": 33.2529719843711,
+        "wav": "raw/213.0cm_barker7_24cyc.wav"
+      }
+    },
+    "distance_225.0cm": {
+      "gaussian": {
+        "tof_us": 12822.916666666666,
+        "expected_tof_us": 13119.533527696793,
+        "rep_rate_hz": 31.426775612822123,
+        "wav": "raw/225.0cm_gaussian.wav"
+      },
+      "optimized_v3": {
+        "tof_us": 18695.3125,
+        "expected_tof_us": 13119.533527696793,
+        "rep_rate_hz": 31.426775612822123,
+        "wav": "raw/225.0cm_optimized_v3.wav"
+      },
+      "barker7_24cyc": {
+        "tof_us": 1166.6666666666667,
+        "expected_tof_us": 13119.533527696793,
+        "rep_rate_hz": 31.426775612822123,
+        "wav": "raw/225.0cm_barker7_24cyc.wav"
+      }
+    },
+    "pulse_compression_survey": {
+      "gaussian": {
+        "type": "baseline",
+        "tof_us": 5643.229166666667,
+        "wav": "raw/survey_gaussian.wav"
+      },
+      "optimized_v3": {
+        "type": "baseline",
+        "tof_us": 5692.708333333333,
+        "wav": "raw/survey_optimized_v3.wav"
+      },
+      "barker2_24cyc": {
+        "type": "barker",
+        "length": 2,
+        "cycles_per_chip": 24,
+        "tof_us": 609.375,
+        "theo_sidelobe_db": -6.0,
+        "wav": "raw/barker2_24cyc.wav"
+      },
+      "barker3_24cyc": {
+        "type": "barker",
+        "length": 3,
+        "cycles_per_chip": 24,
+        "tof_us": 1106.7708333333333,
+        "theo_sidelobe_db": -9.5,
+        "wav": "raw/barker3_24cyc.wav"
+      },
+      "barker4_24cyc": {
+        "type": "barker",
+        "length": 4,
+        "cycles_per_chip": 24,
+        "tof_us": 658.8541666666666,
+        "theo_sidelobe_db": -12.0,
+        "wav": "raw/barker4_24cyc.wav"
+      },
+      "barker5_24cyc": {
+        "type": "barker",
+        "length": 5,
+        "cycles_per_chip": 24,
+        "tof_us": 2234.375,
+        "theo_sidelobe_db": -14.0,
+        "wav": "raw/barker5_24cyc.wav"
+      },
+      "barker7_24cyc": {
+        "type": "barker",
+        "length": 7,
+        "cycles_per_chip": 24,
+        "tof_us": 1195.3125,
+        "theo_sidelobe_db": -16.9,
+        "wav": "raw/barker7_24cyc.wav"
+      },
+      "barker11_24cyc": {
+        "type": "barker",
+        "length": 11,
+        "cycles_per_chip": 24,
+        "tof_us": 500.0,
+        "theo_sidelobe_db": -20.8,
+        "wav": "raw/barker11_24cyc.wav"
+      },
+      "barker13_24cyc": {
+        "type": "barker",
+        "length": 13,
+        "cycles_per_chip": 24,
+        "tof_us": 500.0,
+        "theo_sidelobe_db": -22.3,
+        "wav": "raw/barker13_24cyc.wav"
+      },
+      "barker7_16cyc": {
+        "type": "barker",
+        "length": 7,
+        "cycles_per_chip": 16,
+        "tof_us": 807.2916666666666,
+        "wav": "raw/barker7_16cyc.wav"
+      },
+      "barker7_48cyc": {
+        "type": "barker",
+        "length": 7,
+        "cycles_per_chip": 48,
+        "tof_us": 500.0,
+        "wav": "raw/barker7_48cyc.wav"
+      },
+      "chirp_lfm": {
+        "type": "chirp",
+        "f_start": 38000,
+        "f_end": 44000,
+        "duration_ms": 2,
+        "tof_us": 656.25,
+        "wav": "raw/chirp_lfm.wav"
+      },
+      "mls7": {
+        "type": "mls",
+        "n_bits": 3,
+        "period": 7,
+        "tof_us": 2776.0416666666665,
+        "wav": "raw/mls7.wav"
+      },
+      "mls15": {
+        "type": "mls",
+        "n_bits": 4,
+        "period": 15,
+        "tof_us": 6770.833333333334,
+        "wav": "raw/mls15.wav"
+      },
+      "mls31": {
+        "type": "mls",
+        "n_bits": 5,
+        "period": 31,
+        "tof_us": 536.4583333333334,
+        "wav": "raw/mls31.wav"
+      },
+      "golay_A": {
+        "type": "golay",
+        "length": 8,
+        "tof_us": 1750.0,
+        "wav": "raw/golay_A.wav"
+      },
+      "golay_B": {
+        "type": "golay",
+        "length": 8,
+        "tof_us": 1708.3333333333335,
+        "wav": "raw/golay_B.wav"
+      }
+    }
+  }
+}
