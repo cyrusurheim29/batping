@@ -154,25 +154,60 @@ python stepped_sine_characterization.py
 - **manifest.json** contains: timestamp, version, hardware config, test parameters,
   and per-measurement results (FWHM, sidelobe, TOF, efficiency) with file paths
 
-## Waveform Comparison (July 2026)
+## Waveform Comparison — Best σ_TOF Results (July 5, 2026)
 
-TOF-peak FWHM from full-signal autocorrelation, HP 30 kHz order-8 filter.
-Metric: FWHM of the incident⊗reflected cross-correlation peak at lag=TOF.
+Primary metric: **σ_TOF** — standard deviation of per-period TOF estimates (N≈180 periods,
+3s recording clip at ~60 Hz). This is the real temperature precision metric.
+Secondary: TOF-peak FWHM from full-signal autocorrelation, HP 30 kHz order-8 filter.
 
-| Waveform | TOF FWHM (μs) | Notes |
-|----------|---------------|-------|
-| **LFM 8 kHz comp (37–45 kHz, 10 ms)** | **169** | **New best — beats V3** |
-| LFM 6 kHz comp (38–44 kHz, 10 ms) | 201 | Piezo-compensated |
-| LFM 8 kHz flat (37–45 kHz, 10 ms) | 245 | Uncompensated |
-| Optimized Gaussian V3 | 250 | Bayesian-optimized, σ≈2 cycles |
-| LFM 12 kHz flat (35–47 kHz, 10 ms) | 232 | Wide flat chirp (same effective BW as 8 kHz) |
-| LFM 6 kHz flat (38–44 kHz, 10 ms) | 281 | |
-| Barker-7 @ 4 cyc/chip | 253 | Best Barker (unresolved chips, acts like short pulse) |
-| Barker-7 @ 16 cyc/chip | 513 | Chips partially resolved |
-| Baseline Gaussian (σ=5) | ~479 | Unoptimized reference |
+| Waveform | σ_TOF (μs) | °C/ping | TOF FWHM (μs) | Notes |
+|---|---|---|---|---|
+| **bw_20kHz_wide_4ms_comp** | **0.29** | **0.028°C** | 89 | TBP=80, rect window |
+| hf_m15dB_asym_2ms_comp (rect) | 0.27 | 0.026°C | 174 | Best rect control |
+| bw_25kHz_wide_2ms_comp | 0.41 | 0.040°C | 96 | Wide BW, Tukey |
+| hf_m15dB_asym_2ms_comp (Tukey) | 0.49 | 0.047°C | 182 | H(f)-matched passband |
+| Optimized Gaussian V3 | 0.58 | 0.056°C | 281 | Bayesian-optimized |
+| Barker-7 16 cyc/chip | 0.52 | 0.050°C | 482 | Corrected REP_RATE=40 |
 
-**New theoretical floor: ~125–169 μs** using amplitude-compensated LFM chirp.
-Previous floor was ~250 μs (≈ 1/piezo_BW). Compensation extends effective BW to ~6 kHz.
+Paul Horowitz's claimed target of 1 μs / ping is exceeded by 2–4× on multiple configs.
+
+### Key Findings — July 5, 2026
+
+**Window choice matters significantly for short chirps.**
+For a 2 ms chirp, the Hann window tapers ~50% of the signal, costing substantial energy.
+Tukey(0.05) loses only ~5%; rectangular loses nothing. Measured improvement:
+- hf_m15dB_asym_2ms_comp: Hann → 1.02 μs, Tukey → 0.49 μs, Rect → 0.27 μs
+
+**H(f)-derived asymmetric passbands outperform symmetric.**
+The piezo response is asymmetric (extends ~975 Hz further on the low side at −6 dB,
+growing to ~2525 Hz at −20 dB). Chirp passbands matched to the actual H(f) dB-level
+boundaries outperform symmetric passbands of the same nominal bandwidth.
+Best: hf_m15dB (36650–44125 Hz, BW=7475 Hz).
+
+**Wide BW achieves high TBP without overlap.**
+Max safe duration (no incident/reflected overlap) ≈ 5 ms (TOF=5.7 ms).
+Maximum achievable TBP = BW_max × TOF_max ≈ 8400 × 0.0057 ≈ 48 (within piezo -20 dB BW).
+By sweeping beyond the −20 dB piezo boundary (compensation boosts to 20 dB max),
+TBP up to 150 (bw_30kHz_wide_5ms_comp) is achievable — though effective SNR limits
+actual improvement beyond ~TBP=80.
+
+**σ_TOF shows no clean trend with BW despite FWHM doing so.**
+FWHM is deterministic (set by signal bandwidth) → clean monotonic trends.
+σ_TOF depends on SNR at the TOF peak, which varies with ambient noise, temperature
+stability, and SDG clock jitter on the specific 3-second recording window → noisy.
+Remedy: measure SNR_amplitude = A_TOF / σ_noise_floor directly and use
+σ_TOF_theory = FWHM / (3.33 × SNR_amplitude) — see `sigma_tof_derivation.tex`.
+
+### Theoretical σ_TOF (Cramér-Rao Bound)
+
+For a Gaussian-shaped autocorrelation envelope peak in white noise:
+
+```
+σ_TOF_theory = FWHM / (3.33 × SNR_amplitude)
+```
+
+where SNR_amplitude = A_TOF / σ_noise, with σ_noise = RMS of the Hilbert envelope
+in the 15–20 ms lag region (no signal). Now computed live in chirp_sweep.py.
 
 ### Chirp Sweep Key Findings (July 2, 2026)
 
@@ -180,15 +215,9 @@ Previous floor was ~250 μs (≈ 1/piezo_BW). Compensation extends effective BW 
 at 2 ms, 5 ms, and 10 ms (all ~406–443 μs) — the channel is bandwidth-limited, not
 energy-limited over this range.
 
-**Amplitude compensation pre-distorts the transmitted envelope by 1/|H(f_inst)| so that
-the received spectrum is approximately flat across the chirp bandwidth.** Results for
-10 ms chirps at 40 Hz:
-
-| BW | Flat FWHM | Comp FWHM | Improvement |
-|----|-----------|-----------|-------------|
-| 3.75 kHz | 406 μs | 352 μs | 13% |
-| 6 kHz | 281 μs | 201 μs | 28% |
-| 8 kHz | 245 μs | **169 μs** | 31% |
+**Amplitude compensation** pre-distorts the transmitted envelope by 1/|H(f_inst)| so that
+the received spectrum is approximately flat across the chirp bandwidth.
+Improvement at 2 ms with Tukey window: 6 kHz comp → ~30% narrower FWHM than flat.
 
 **Barker-7 does not outperform Gaussian for this piezo.** Chips shorter than 1/BW (~500 μs)
 are not individually resolved — the sequence acts like a single short pulse. Chips longer
@@ -198,20 +227,32 @@ poor sidelobe suppression (~-10 dB measured vs -16.9 dB theoretical).
 
 ### Analysis Pipeline Notes
 
-- **analyze_wav_autocorr_v1.py**: envelope must be computed from FILTERED data (fixed July 2026);
-  REP_RATE must match the recording (40 Hz for all current-setup recordings, 62.5 Hz for
-  older bayesian_optimizer_sdg.py recordings).
-- **chirp_sweep.py**: uses full-signal autocorrelation (not matched filter) — the 10 ms
-  chirp duration is comparable to TOF (~5.7 ms), making matched-filter peak detection
-  unreliable.
+- **analyze_wav_autocorr_v1.py**: envelope must be computed from FILTERED data (fixed July 2);
+  REP_RATE must match the recording (40 Hz for current setup, 62.5 Hz for older recordings).
+- **chirp_sweep.py**: uses full-signal autocorrelation via `scipy.signal.correlate` (FFT-based,
+  O(N log N)). np.correlate is O(N²) and unusable on recordings > 1s. Received signal
+  clipped to 3s for live analysis; full WAV saved for offline Stubbs analysis.
+- **Hilbert envelope vs zero-crossing**: Hilbert envelope resolves carrier-cycle ambiguity
+  naturally (envelope peaks once at TOF regardless of carrier phase). Zero-crossing
+  detection (Horowitz/Hill approach) gives better precision at high SNR but requires
+  unambiguous cycle identification. At 2 Vpp bench SNR, Hilbert + correlation is preferred.
+- **RECORD_DURATION = 5s** (current): ~300 periods at 60 Hz. N_TEMPLATE=100 for Stubbs
+  pipeline leaves ~200 evaluation periods.
 
 ## Key Files
 
 ### Scripts
-- `piezo_characterization.py` - Chirp-based bandwidth measurement
-- `stepped_sine_characterization.py` - Stepped-sine bandwidth validation
-- `bayesian_optimizer_sdg.py` - Bayesian waveform optimization
-- `test_optimized_waveform.py` - Test optimized waveforms
+- `chirp_sweep.py` — LFM chirp sweep (BW, duration, window, comp/flat); full SNR + σ_TOF live
+- `chirp_stubbs_analysis.py` — offline Stubbs dual-template pipeline (co-add N=100, cross-corr)
+- `chirp_reanalyze.py` — reanalyze saved WAVs without hardware
+- `barker7_prbs_testing.py` — Barker-7 chip sweep (V6: TOF FWHM + targeted sidelobe search)
+- `bayesian_optimizer_sdg.py` — Bayesian waveform optimization (Gaussian with pre/post comp)
+- `analyze_wav_autocorr_v1.py` — per-period autocorrelation pipeline for saved WAVs
+- `piezo_characterization.py` — chirp-based bandwidth measurement
+- `stepped_sine_characterization.py` — stepped-sine bandwidth validation
+
+### Documentation
+- `sigma_tof_derivation.tex` — Cramér-Rao derivation of σ_TOF from FWHM and SNR
 
 ### Data
 - `piezo_characterization.npz` - Bandwidth measurement data

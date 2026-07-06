@@ -1,0 +1,156 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\title{Theoretical Minimum $\sigma_\mathrm{TOF}$ from Correlation Peak FWHM and SNR}
+\author{BATPING Project Technical Notes}
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+\section{Setup}
+
+The time-of-flight (TOF) is estimated from the peak of the Hilbert envelope of the
+autocorrelation of the received signal.  Near the peak, the envelope is well approximated
+by a Gaussian:
+\begin{equation}
+  E(\tau) \;=\; A_\mathrm{TOF}\,\exp\!\left(-\frac{(\tau-\tau_0)^2}{2\sigma_\mathrm{env}^2}\right)
+             \;+\; n(\tau),
+  \label{eq:envelope}
+\end{equation}
+where $A_\mathrm{TOF}$ is the peak amplitude, $\tau_0$ is the true TOF,
+$n(\tau)$ is additive white noise with RMS $\sigma_n$, and $\sigma_\mathrm{env}$
+is the width of the envelope.  The FWHM of the peak relates to $\sigma_\mathrm{env}$ by
+\begin{equation}
+  \mathrm{FWHM} \;=\; 2\sqrt{2\ln 2}\;\sigma_\mathrm{env} \;\approx\; 2.355\,\sigma_\mathrm{env}.
+  \label{eq:fwhm}
+\end{equation}
+
+\section{Cramér--Rao Bound}
+
+The Fisher information for the location parameter $\tau_0$ of a Gaussian peak
+in white noise is
+\begin{equation}
+  \mathcal{I}(\tau_0)
+    \;=\; \frac{1}{\sigma_n^2}\int_{-\infty}^{\infty}
+          \left[\frac{\partial E}{\partial \tau_0}\right]^2 d\tau.
+\end{equation}
+Computing the derivative from \eqref{eq:envelope}:
+\begin{equation}
+  \frac{\partial E}{\partial \tau_0}
+    \;=\; A_\mathrm{TOF}\,\frac{\tau - \tau_0}{\sigma_\mathrm{env}^2}
+          \exp\!\left(-\frac{(\tau-\tau_0)^2}{2\sigma_\mathrm{env}^2}\right).
+\end{equation}
+Substituting and evaluating the Gaussian integral:
+\begin{equation}
+  \mathcal{I}(\tau_0)
+    \;=\; \frac{A_\mathrm{TOF}^2}{\sigma_n^2\,\sigma_\mathrm{env}^4}
+          \int_{-\infty}^{\infty}
+          (\tau-\tau_0)^2\,
+          e^{-(\tau-\tau_0)^2/\sigma_\mathrm{env}^2}\,d\tau
+    \;=\; \frac{A_\mathrm{TOF}^2}{\sigma_n^2\,\sigma_\mathrm{env}^2}
+          \cdot\frac{\sqrt{\pi}}{2}\cdot\frac{1}{\sqrt{1/\sigma_\mathrm{env}^2}}.
+\end{equation}
+After simplification:
+\begin{equation}
+  \mathcal{I}(\tau_0)
+    \;=\; \frac{A_\mathrm{TOF}^2\,\sqrt{\pi\,\sigma_\mathrm{env}^2}}
+               {2\,\sigma_n^2\,\sigma_\mathrm{env}^2}
+    \;=\; \frac{A_\mathrm{TOF}^2\sqrt{\pi}}{2\,\sigma_n^2\,\sigma_\mathrm{env}}.
+\end{equation}
+The Cramér--Rao bound gives the minimum variance of any unbiased estimator:
+\begin{equation}
+  \sigma_\tau^2 \;\geq\; \frac{1}{\mathcal{I}(\tau_0)}
+    \;=\; \frac{2\,\sigma_n^2\,\sigma_\mathrm{env}}{A_\mathrm{TOF}^2\,\sqrt{\pi}}.
+\end{equation}
+Defining the \emph{amplitude SNR} at the TOF peak as
+$\mathrm{SNR}_A \equiv A_\mathrm{TOF}/\sigma_n$, and using
+$\sigma_\mathrm{env} = \mathrm{FWHM}/2.355$:
+\begin{equation}
+  \sigma_\tau^2 \;\geq\;
+    \frac{2\,\sigma_\mathrm{env}}{\mathrm{SNR}_A^2\,\sqrt{\pi}}
+    \;=\;
+    \frac{2}{\sqrt{\pi}}\cdot\frac{\mathrm{FWHM}}{2.355\,\mathrm{SNR}_A^2}.
+\end{equation}
+Taking the square root and absorbing numerical constants:
+\begin{equation}
+  \boxed{
+    \sigma_\tau^{\mathrm{theory}}
+      \;\approx\;
+      \frac{\mathrm{FWHM}}{2.355\,\sqrt{2}\;\mathrm{SNR}_A}
+      \;=\;
+      \frac{\mathrm{FWHM}}{3.33\;\mathrm{SNR}_A}.
+  }
+  \label{eq:main}
+\end{equation}
+
+\section{Definitions of Measured Quantities}
+
+\paragraph{FWHM.}
+Measured from the Hilbert envelope of the autocorrelation at the TOF peak,
+using parabolic sub-sample interpolation at the half-maximum crossings.
+
+\paragraph{$\mathrm{SNR}_A$.}
+The amplitude SNR at the TOF peak:
+\begin{equation}
+  \mathrm{SNR}_A \;=\; \frac{A_\mathrm{TOF}}{\sigma_n},
+\end{equation}
+where $A_\mathrm{TOF}$ is the Hilbert envelope value at the detected TOF lag, and
+$\sigma_n$ is the RMS of the Hilbert envelope in a noise-only region well away from
+any acoustic arrival (in practice, lags $15$--$20\,\mathrm{ms}$, where no signal energy
+is expected).
+
+In the normalized autocorrelation (lag-0 peak $= 1$), both $A_\mathrm{TOF}$ and
+$\sigma_n$ are expressed as fractions of the lag-0 peak.
+
+\paragraph{Temperature sensitivity.}
+The speed of sound in air is $c(T) = 331.3 + 0.606\,T$ m/s.  For a round-trip path
+of length $2L$, the TOF sensitivity to temperature is
+\begin{equation}
+  \frac{\partial \tau}{\partial T}
+    \;=\; -\frac{2L}{c^2}\,\frac{\partial c}{\partial T}
+    \;\approx\; -10.3\;\mu\mathrm{s/{}^\circ C}
+\end{equation}
+at $T = 20\,^\circ$C with $L = 1\,\mathrm{m}$.  The theoretical temperature precision is
+therefore
+\begin{equation}
+  \sigma_T^{\mathrm{theory}}
+    \;=\; \frac{\sigma_\tau^{\mathrm{theory}}}{10.3\;\mu\mathrm{s/{}^\circ C}}.
+\end{equation}
+
+\section{Numerical Example}
+
+For the best result from the July 2 recordings
+(13\,kHz compensated chirp, 10\,ms duration):
+\begin{align*}
+  \mathrm{FWHM} &= 99\;\mu\mathrm{s}, \\
+  \sigma_\tau^{\mathrm{measured}} &= 0.34\;\mu\mathrm{s}, \\
+  \mathrm{SNR}_A^{\mathrm{implied}} &= \frac{99}{3.33 \times 0.34} \approx 87
+    \quad(\approx 39\,\mathrm{dB}).
+\end{align*}
+Once $\sigma_n$ is measured directly from the noise floor of the autocorrelation,
+equation~\eqref{eq:main} can be evaluated forward (predicting $\sigma_\tau$) rather
+than backward (inferring $\mathrm{SNR}_A$ from the measured $\sigma_\tau$).
+
+\section{Interpretation}
+
+Equation~\eqref{eq:main} makes explicit the two independent routes to improving
+$\sigma_\tau$:
+
+\begin{enumerate}
+  \item \textbf{Narrow the FWHM} by increasing the effective signal bandwidth ---
+        through wider chirp passbands, amplitude compensation, or higher-order
+        modulation schemes.
+  \item \textbf{Raise the SNR} by increasing drive voltage, using co-added
+        templates (SNR $\propto \sqrt{N}$), reducing ambient noise, or improving
+        transducer coupling efficiency.
+\end{enumerate}
+The two are not fully independent: a wider passband driven by compensation often
+pushes into lower-SNR frequency regions, so gains in FWHM may come at a cost to
+$\mathrm{SNR}_A$.  The product $\mathrm{SNR}_A \times \mathrm{FWHM}^{-1}$ is the
+figure of merit that directly determines $\sigma_\tau$.
+
+\end{document}
