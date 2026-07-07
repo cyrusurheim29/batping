@@ -41,7 +41,7 @@ DODOMIC_SAMPLE_RATE = 384000        # UltraMic
 CHUNK_SIZE          = 4096
 SDG_MAX_SAMPLES     = 16384
 AMPLITUDE           = 0.9
-RECORD_DURATION     = 5.0           # s — ~300 periods at 60Hz: 100 template + 200 eval
+RECORD_DURATION     = 30.0          # s — ~1800 periods at 60Hz: 100 template + 1700 eval for Stubbs
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 OUTPUT_DIR       = '/Users/cyrusurheim_1/Downloads/Stubbs_Stuff/Claude_Dir/siglent_project/'
@@ -57,66 +57,22 @@ VERSION          = "V1"
 # Duration sweep: fixed 3.75 kHz (actual -6dB BW), vary 2/5/10 ms.
 # Compensated: pre-distort envelope so transmitted spectrum is flatter.
 CHIRP_CONFIGS = [
-    # All configs from 20260705 re-recorded with Tukey(0.05) instead of Hann.
-    # One rect control added on the best Hann config (hf_m15dB_asym_2ms_comp).
-    # Piezo center 41475 Hz. Dead time = 15ms. All durations < TOF (5.7ms).
+    # 30s recordings → ~1800 periods at ~60Hz: 100 for Stubbs template + 1700 eval.
+    # Best 5 configs from July 5 re-recorded, plus 2 reduced-compensation variants
+    # ('piezo_compensated_light': 20% floor = 14dB max vs standard 10% = 20dB).
 
-    # ── DURATION SWEEP — 6 kHz symmetric, compensated ───────────────────────
-    # Very short: approaches Gaussian pulse regime (TBP << 1, ~4-10 carrier cycles)
-    (38475, 44475, 0.1,  'dur_6kHz_0.1ms_comp',  'piezo_compensated', 'tukey'),  # ~4 cycles
-    (38475, 44475, 0.25, 'dur_6kHz_0.25ms_comp', 'piezo_compensated', 'tukey'),  # ~10 cycles
-    (38475, 44475, 0.5, 'dur_6kHz_0.5ms_comp',   'piezo_compensated', 'tukey'),
-    (38475, 44475, 1.0, 'dur_6kHz_1ms_comp',     'piezo_compensated', 'tukey'),
-    (38475, 44475, 2.0, 'dur_6kHz_2ms_comp',     'piezo_compensated', 'tukey'),
-    (38475, 44475, 3.0, 'dur_6kHz_3ms_comp',     'piezo_compensated', 'tukey'),
-    (38475, 44475, 4.0, 'dur_6kHz_4ms_comp',     'piezo_compensated', 'tukey'),
+    # ── Best performers from July 5 — re-recorded for Stubbs analysis ────────
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp',      'piezo_compensated',       'tukey'),  # σ=0.29μs
+    (28975, 53975, 2.0, 'bw_25kHz_wide_2ms_comp',       'piezo_compensated',       'tukey'),  # σ=0.41μs
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_rect',  'piezo_compensated',       'rect'),   # σ=0.27μs
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp',       'piezo_compensated',       'tukey'),  # σ=0.49μs
+    (38475, 44475, 2.0, 'bw_6kHz_sym_2ms_flat',         'flat',                    'tukey'),  # σ=0.43μs, reference
 
-    # ── BW SWEEP — symmetric, 2 ms, compensated ─────────────────────────────
-    (40475, 42475, 2.0, 'bw_2kHz_sym_2ms_comp',  'piezo_compensated', 'tukey'),
-    (39475, 43475, 2.0, 'bw_4kHz_sym_2ms_comp',  'piezo_compensated', 'tukey'),
-    (38475, 44475, 2.0, 'bw_6kHz_sym_2ms_comp',  'piezo_compensated', 'tukey'),
-    (37475, 45475, 2.0, 'bw_8kHz_sym_2ms_comp',  'piezo_compensated', 'tukey'),
-    (36475, 46475, 2.0, 'bw_10kHz_sym_2ms_comp', 'piezo_compensated', 'tukey'),
-    (35475, 47475, 2.0, 'bw_12kHz_sym_2ms_comp', 'piezo_compensated', 'tukey'),
-    (34475, 48475, 2.0, 'bw_14kHz_sym_2ms_comp', 'piezo_compensated', 'tukey'),
-    (33475, 49475, 2.0, 'bw_16kHz_sym_2ms_comp', 'piezo_compensated', 'tukey'),
-
-    # ── H(f)-DERIVED ASYMMETRIC PASSBANDS — 2 ms, compensated ───────────────
-    (40500, 42225, 2.0, 'hf_m3dB_asym_2ms_comp',  'piezo_compensated', 'tukey'),
-    (39100, 42875, 2.0, 'hf_m6dB_asym_2ms_comp',  'piezo_compensated', 'tukey'),
-    (38200, 43425, 2.0, 'hf_m9dB_asym_2ms_comp',  'piezo_compensated', 'tukey'),
-    (37350, 43975, 2.0, 'hf_m12dB_asym_2ms_comp', 'piezo_compensated', 'tukey'),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp', 'piezo_compensated', 'tukey'),
-    (36000, 44425, 2.0, 'hf_m20dB_asym_2ms_comp', 'piezo_compensated', 'tukey'),
-
-    # ── FLAT REFERENCES ──────────────────────────────────────────────────────
-    (38475, 44475, 2.0, 'bw_6kHz_sym_2ms_flat',   'flat',              'tukey'),
-    (37350, 43975, 2.0, 'hf_m12dB_asym_2ms_flat', 'flat',              'tukey'),
-
-    # ── RECTANGULAR WINDOW CONTROL ───────────────────────────────────────────
-    # hf_m15dB_asym_2ms_comp was the best Hann result (σ=1.02μs, 0.099°C/ping).
-    # Same config, no taper: isolates window effect from everything else.
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_rect', 'piezo_compensated', 'rect'),
-
-    # ── WIDE BW SWEEP — symmetric, short duration (2ms), safe from 25kHz ────
-    # f_start ≥ 26475 Hz throughout (≥1.5kHz above 25kHz noise).
-    # Compensation pushes signal through the deep piezo skirts.
-    # TBP values shown — constrained by short duration.
-    (33475, 49475, 2.0, 'bw_16kHz_wide_2ms_comp', 'piezo_compensated', 'tukey'),  # TBP=32
-    (31475, 51475, 2.0, 'bw_20kHz_wide_2ms_comp', 'piezo_compensated', 'tukey'),  # TBP=40
-    (28975, 53975, 2.0, 'bw_25kHz_wide_2ms_comp', 'piezo_compensated', 'tukey'),  # TBP=50
-    (26475, 56475, 2.0, 'bw_30kHz_wide_2ms_comp', 'piezo_compensated', 'tukey'),  # TBP=60
-
-    # ── WIDE BW, 4ms — approaches and matches July 2 TBP=80 without overlap ─
-    # 4ms + 15ms dead = 19ms buffer; echo arrives at 5.7ms (1.7ms after chirp ends).
-    (33475, 49475, 4.0, 'bw_16kHz_wide_4ms_comp', 'piezo_compensated', 'tukey'),  # TBP=64
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp', 'piezo_compensated', 'tukey'),  # TBP=80 ← July 2 equivalent
-    (28975, 53975, 4.0, 'bw_25kHz_wide_4ms_comp', 'piezo_compensated', 'tukey'),  # TBP=100
-    (26475, 56475, 4.0, 'bw_30kHz_wide_4ms_comp', 'piezo_compensated', 'tukey'),  # TBP=120
-
-    # ── WIDE BW, 5ms — maximum TBP without overlap (echo at 5.7ms, 0.7ms gap) ─
-    (31475, 51475, 5.0, 'bw_20kHz_wide_5ms_comp', 'piezo_compensated', 'tukey'),  # TBP=100
-    (26475, 56475, 5.0, 'bw_30kHz_wide_5ms_comp', 'piezo_compensated', 'tukey'),  # TBP=150
+    # ── Reduced-compensation variants (20% floor = 14dB max boost) ───────────
+    # Tests whether aggressive compensation (10% floor, 20dB) degrades Stubbs
+    # template consistency via period-to-period shape variation from piezo memory.
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp_light', 'piezo_compensated_light', 'tukey'),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_light', 'piezo_compensated_light', 'tukey'),
 ]
 
 # TOF search window for 2 m round trip (~5800 μs)
@@ -224,9 +180,10 @@ def generate_lfm_chirp(f_start, f_stop, duration_ms, sample_rate,
     f_inst = f_start + (f_stop - f_start) / dur_s * t
     phase  = 2 * np.pi * (f_start * t + (f_stop - f_start) / (2 * dur_s) * t ** 2)
 
-    if amplitude_shape == 'piezo_compensated' and piezo_response is not None:
+    if amplitude_shape in ('piezo_compensated', 'piezo_compensated_light') and piezo_response is not None:
         mag = np.interp(f_inst, piezo_response['freq'], piezo_response['magnitude'])
-        mag = np.clip(mag, 0.10, None)          # floor at 10 % → cap gain at 20 dB
+        floor = 0.10 if amplitude_shape == 'piezo_compensated' else 0.20  # 10%=20dB, 20%=14dB
+        mag = np.clip(mag, floor, None)
         amp_env = AMPLITUDE / mag
         amp_env = amp_env / np.max(amp_env) * AMPLITUDE
     else:
