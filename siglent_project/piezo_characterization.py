@@ -31,7 +31,7 @@ CHUNK_SIZE = 4096
 
 # Chirp parameters
 CHIRP_F1 = 20000      # Start frequency (Hz)
-CHIRP_F2 = 60000      # End frequency (Hz)
+CHIRP_F2 = 65000      # End frequency (Hz)  (extended to match stepped-sine range)
 CHIRP_DURATION = 0.010  # 10 ms chirp duration
 CHIRP_AMPLITUDE = 0.9   # Normalized amplitude
 

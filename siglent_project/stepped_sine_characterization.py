@@ -42,9 +42,9 @@ CHUNK_SIZE = 4096
 RES_FREQ = 40000
 
 # Frequency sweep configuration
-FREQ_START = 25000   # Hz
-FREQ_END = 55000     # Hz
-FREQ_STEP = 25       # Hz (1200 frequencies, ~25 min total)
+FREQ_START = 20000   # Hz  (extended to capture full chirp band 26-57 kHz + margins)
+FREQ_END = 65000     # Hz
+FREQ_STEP = 50       # Hz  (~900 frequencies, ~13 min total)
 AMPLITUDE = 0.9
 
 OUTPUT_DIR = '/Users/cyrusurheim_1/Downloads/Stubbs_Stuff/Claude_Dir/siglent_project/'
