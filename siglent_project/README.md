@@ -154,22 +154,29 @@ python stepped_sine_characterization.py
 - **manifest.json** contains: timestamp, version, hardware config, test parameters,
   and per-measurement results (FWHM, sidelobe, TOF, efficiency) with file paths
 
-## Waveform Comparison — Best σ_TOF Results (July 5, 2026)
+## Waveform Comparison — Best σ_TOF Results (July 7, 2026 — fresh 30s recordings)
 
-Primary metric: **σ_TOF** — standard deviation of per-period TOF estimates (N≈180 periods,
-3s recording clip at ~60 Hz). This is the real temperature precision metric.
-Secondary: TOF-peak FWHM from full-signal autocorrelation, HP 30 kHz order-8 filter.
+Primary metric: **σ_TOF** — per-period autocorrelation standard deviation, 30s recording,
+3s live-analysis clip. Secondary: TOF-peak FWHM, HP 30 kHz filter.
 
-| Waveform | σ_TOF (μs) | °C/ping | TOF FWHM (μs) | Notes |
-|---|---|---|---|---|
-| **bw_20kHz_wide_4ms_comp** | **0.29** | **0.028°C** | 89 | TBP=80, rect window |
-| hf_m15dB_asym_2ms_comp (rect) | 0.27 | 0.026°C | 174 | Best rect control |
-| bw_25kHz_wide_2ms_comp | 0.41 | 0.040°C | 96 | Wide BW, Tukey |
-| hf_m15dB_asym_2ms_comp (Tukey) | 0.49 | 0.047°C | 182 | H(f)-matched passband |
-| Optimized Gaussian V3 | 0.58 | 0.056°C | 281 | Bayesian-optimized |
-| Barker-7 16 cyc/chip | 0.52 | 0.050°C | 482 | Corrected REP_RATE=40 |
+| Waveform | σ_TOF (μs) | °C/ping | TOF FWHM (μs) | SNR (dB) | Notes |
+|---|---|---|---|---|---|
+| **bw_6kHz_sym_2ms_flat** | **0.41** | **0.039°C** | 273 | 3.0 | Flat, no compensation — best overall |
+| hf_m15dB_asym_2ms_comp | 0.53 | 0.052°C | 177 | 5.1 | H(f)-matched, compensated |
+| hf_m15dB_asym_2ms_comp_light | 0.64 | 0.062°C | 174 | 5.1 | Reduced-boost compensation |
+| hf_m15dB_asym_2ms_comp_rect | 0.73 | 0.071°C | 164 | 5.1 | Rect window |
+| bw_20kHz_wide_4ms_comp | 1.12 | 0.109°C | 96 | 2.9 | Wide BW, lower SNR |
+| bw_25kHz_wide_2ms_comp | 1.15 | 0.112°C | 99 | 4.4 | |
+| bw_20kHz_wide_4ms_comp_light | 1.31 | 0.127°C | 104 | 4.2 | |
+| Optimized Gaussian V3 | 0.58 | 0.056°C | 281 | — | Bayesian-optimized (June) |
+| Barker-7 16 cyc/chip | 0.52 | 0.050°C | 482 | — | Corrected REP_RATE=40 |
 
-Paul Horowitz's claimed target of 1 μs / ping is exceeded by 2–4× on multiple configs.
+Key finding: **flat uncompensated 6kHz chirp beats all compensated configs** for per-period
+autocorr σ_TOF. Wide BW (20–25kHz) configs are WORSE despite higher TBP because the
+compensation drives the piezo deep into its noise floor, reducing SNR.
+Paul Horowitz's 1 μs/ping target exceeded by 2.4× on the best config.
+
+Stubbs pipeline (first 9s, July 6 data): best σ(Δτ) = 0.26 μs → 0.025°C/ping.
 
 ### Key Findings — July 5, 2026
 

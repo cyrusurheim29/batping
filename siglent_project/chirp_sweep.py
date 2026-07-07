@@ -41,7 +41,7 @@ DODOMIC_SAMPLE_RATE = 384000        # UltraMic
 CHUNK_SIZE          = 4096
 SDG_MAX_SAMPLES     = 16384
 AMPLITUDE           = 0.9
-RECORD_DURATION     = 30.0          # s — ~1800 periods at 60Hz: 100 template + 1700 eval for Stubbs
+RECORD_DURATION     = 30.0          # s — ~1500-1800 periods at 60Hz
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 OUTPUT_DIR       = '/Users/cyrusurheim_1/Downloads/Stubbs_Stuff/Claude_Dir/siglent_project/'

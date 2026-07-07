@@ -197,7 +197,7 @@ def slice_periods(data, fs, rep_rate, amp_cutoff=0.25):
     Find period start index via first strong peak after 8ms, then slice uniformly.
     Returns list of (start_idx, end_idx) tuples.
     """
-    period_idx = int(fs / rep_rate)
+    period_idx = round(fs / rep_rate)   # round not int — minimises per-period quantisation error
     env = np.abs(hilbert(data))
     env_n = env / np.max(env)
     t_s = np.arange(len(data)) / fs
@@ -263,13 +263,13 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
               f"Reducing n_template to {max(1, n_periods - 5)}.")
         n_template = max(1, n_periods - 5)
 
-    # Auto-detect windows from first period if not explicitly provided
+    # Auto-detect windows from first period
     if incident_win_ms is None or reflection_win_ms is None:
         first_period = sig[slices[0][0]:slices[0][1]]
         incident_win_ms, reflection_win_ms = detect_windows(
             first_period, fs, win_half_width_ms)
 
-    # Extract windows from all periods
+    # Extract windows from all periods (real signal)
     inc_segs  = []
     ref_segs  = []
     for (s, e) in slices:
@@ -305,31 +305,76 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
 
     ref0 = ref_arr[0].copy()
     shifts_frac = np.zeros(n_periods)   # sub-sample shifts in samples
-    radius = int(0.002 * fs)            # ±2ms search window
+    radius = int(0.002 * fs)            # ±2ms bootstrap search window
     center_idx = len(ref0) - 1          # lag=0 index in 'full' correlation
 
-    for i in range(1, n_periods):
+    # ── Adaptive search window alignment ─────────────────────────────────────
+    # The two clocks (SDG + UltraMic) drift at ~3–4 μs/period. After ~9s the
+    # accumulated drift exceeds the chirp correlation length (~2ms), causing the
+    # standard ±2ms search to find carrier-ripple noise instead of the true peak.
+    #
+    # Fix — two phases:
+    #   Phase 1 (bootstrap): compute shifts for the first N_BOOT periods using
+    #     the standard ±2ms window. Here the drift is small and xcorr is reliable.
+    #   Phase 2 (adaptive): fit a line to the bootstrap shifts to estimate the
+    #     drift rate. For all subsequent periods, CENTER the search window on the
+    #     PREDICTED shift. With a ±300 μs narrow window around the prediction, the
+    #     true peak always dominates over carrier ripple (only ~12 carrier cycles in
+    #     the window instead of ~160), enabling reliable alignment for the full
+    #     recording duration regardless of total accumulated drift.
+
+    N_BOOT = 50            # bootstrap periods — shift < 50×4μs = 200μs, well in range
+    narrow = int(0.0003 * fs)   # ±300 μs narrow window for adaptive phase
+
+    def find_shift(xc, lo, hi):
+        """Find sub-sample shift within xc[lo:hi] using Hilbert envelope + parabola."""
+        env = np.abs(hilbert(xc[lo:hi]))
+        lp  = int(np.argmax(env))
+        if 0 < lp < len(env) - 1:
+            ym, y0, yp = env[lp-1], env[lp], env[lp+1]
+            dn = 2*(ym - 2*y0 + yp)
+            dl = np.clip((ym-yp)/dn, -0.5, 0.5) if abs(dn) > 1e-10 else 0.0
+            return (lp + dl + lo) - center_idx
+        return float(lp + lo - center_idx)
+
+    # Phase 1: bootstrap with wide window
+    boot_end = min(N_BOOT + 1, n_periods)
+    for i in range(1, boot_end):
         xc = np.correlate(ref_arr[i], ref0, mode='full')
         lo = max(0, center_idx - radius)
         hi = min(len(xc), center_idx + radius)
-        # MUST use Hilbert envelope — xc oscillates at 40 kHz so argmax(|xc|)
-        # picks a random carrier cycle peak, not the true envelope maximum.
-        env_xc = np.abs(hilbert(xc[lo:hi]))
-        local_peak = np.argmax(env_xc)
-        local_max = local_peak + lo
-        # Parabolic sub-sample refinement on envelope
-        if 0 < local_peak < len(env_xc) - 1:
-            ym, y0, yp = env_xc[local_peak-1], env_xc[local_peak], env_xc[local_peak+1]
-            denom = 2*(ym - 2*y0 + yp)
-            delta = np.clip((ym-yp)/denom, -0.5, 0.5) if abs(denom)>1e-10 else 0.0
-            shifts_frac[i] = (local_peak + delta + lo) - center_idx
-        else:
-            shifts_frac[i] = local_max - center_idx
+        shifts_frac[i] = find_shift(xc, lo, hi)
+
+    # Estimate drift rate from bootstrap (samples/period)
+    boot_idx = np.arange(1, boot_end, dtype=float)
+    drift_rate = np.polyfit(boot_idx, shifts_frac[1:boot_end], 1)[0]
+    drift_rate_us = drift_rate * 1e6 / fs
+
+    # Phase 2: adaptive with continuously-updated drift rate.
+    # A fixed rate estimated from 50 periods has ~3% error from crystal warming,
+    # accumulating to ~100μs after 9s and pushing the true peak outside the window.
+    # Fix: exponential moving average (EMA) on the instantaneous rate measured each
+    # period. With tau_ema = 200 periods, the rate tracks gradual hardware warm-up
+    # without being corrupted by per-period xcorr noise.
+    EMA_TAU = 200.0   # time constant in periods (~3.4s)
+    alpha   = 1.0 / EMA_TAU
+    ema_rate = drift_rate   # initialise from bootstrap
+
+    for i in range(boot_end, n_periods):
+        predicted   = ema_rate * i              # predicted total shift (samples)
+        pred_center = center_idx + int(round(predicted))
+        xc = np.correlate(ref_arr[i], ref0, mode='full')
+        lo = max(0, pred_center - narrow)
+        hi = min(len(xc), pred_center + narrow)
+        shifts_frac[i] = find_shift(xc, lo, hi)
+        # Update rate estimate: instantaneous rate = shift / period_index
+        inst_rate = shifts_frac[i] / i
+        ema_rate  = (1 - alpha) * ema_rate + alpha * inst_rate
 
     drift_us = shifts_frac * 1e6 / fs
-    print(f"  Clock drift: max={drift_us.max():.1f} μs  "
-          f"σ={drift_us.std():.1f} μs over {n_periods} periods  "
-          f"(sub-sample FFT alignment)")
+    print(f"  Clock drift: rate={ema_rate*1e6/fs:.3f} μs/period  "
+          f"total={drift_us[-1]:.1f} μs  "
+          f"(adaptive + EMA rate update τ={EMA_TAU:.0f}p)")
 
     inc_aligned = np.array([fft_shift(row, -shifts_frac[i]) for i, row in enumerate(inc_arr)])
     ref_aligned = np.array([fft_shift(row, -shifts_frac[i]) for i, row in enumerate(ref_arr)])
