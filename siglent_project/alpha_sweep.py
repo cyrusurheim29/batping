@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""
+Alpha-sweep experiment: H(f)^{-alpha} amplitude compensation.
+36 chirps: 6 alpha × 3 BW × 2 durations. 10s recording each. ~6.6 min total.
+
+Alpha:    0.0 (flat) → 0.2 → 0.4 → 0.6 → 0.8 → 1.0 (full 1/H)
+BW:       small=6kHz, medium=12kHz, large=20kHz  (all centered near 42kHz)
+Duration: 2ms, 4ms
+"""
+import os, sys, time, json
+import numpy as np
+from datetime import datetime
+from scipy.io import wavfile
+sys.path.insert(0, os.path.dirname(__file__))
+import chirp_sweep as cs
+
+RECORD_S    = 10.0
+ALPHAS      = [0.2, 0.3, 0.4, 0.5, 0.6, 0.8]
+BANDWIDTHS  = [
+    ('sm',  6_000,  39_000, 45_000),   # small:  6 kHz,  39–45 kHz
+    ('md', 12_000,  36_000, 48_000),   # medium: 12 kHz, 36–48 kHz
+    ('lg', 20_000,  32_000, 52_000),   # large:  20 kHz, 32–52 kHz
+]
+DURATIONS   = [2.0, 4.0]              # ms
+
+SDG_SR, SDG_MAX = 400000, 16384
+
+def rep_rate(dur_ms):
+    buf = min(int((dur_ms + 15) / 1000 * SDG_SR), SDG_MAX)
+    return SDG_SR / buf
+
+
+def main():
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_dir = os.path.join(cs.OUTPUT_DIR, 'recordings', f'{ts}_alpha_sweep')
+    raw_dir = os.path.join(run_dir, 'raw')
+    plt_dir = os.path.join(run_dir, 'plots')
+    os.makedirs(raw_dir, exist_ok=True)
+    os.makedirs(plt_dir, exist_ok=True)
+
+    piezo_response = cs.load_piezo_response()
+    if piezo_response is None:
+        print("ERROR: piezo response not found"); return 1
+
+    n_chirps = len(ALPHAS) * len(BANDWIDTHS) * len(DURATIONS)
+    t_est    = n_chirps * (RECORD_S + 1.0)
+    print(f"\nAlpha sweep: {n_chirps} chirps, ~{t_est/60:.1f} min")
+    print(f"Alphas:   {ALPHAS}")
+    print(f"BWs:      {[b[0] for b in BANDWIDTHS]}")
+    print(f"Durations:{DURATIONS} ms\n")
+
+    pa, mic_index = cs.find_ultramic()
+    if pa is None: return 1
+
+    results = []
+    sdg = None
+    try:
+        sdg = cs.SDG1062X_LAN()
+        sdg.connect()
+        print(f"SDG: {sdg.query('*IDN?')}")
+        sdg.set_arb_mode(channel=1)
+
+        chirp_n = 0
+        for dur_ms in DURATIONS:
+            for bw_tag, bw_hz, f_lo, f_hi in BANDWIDTHS:
+                for alpha in ALPHAS:
+                    chirp_n += 1
+                    label = f'a{alpha:.1f}_{bw_tag}_{dur_ms:.0f}ms'
+                    rr    = rep_rate(dur_ms)
+                    print(f"\n[{chirp_n:02d}/{n_chirps}] {label}  "
+                          f"({f_lo/1000:.0f}–{f_hi/1000:.0f}kHz  "
+                          f"BW={bw_hz/1000:.0f}kHz  α={alpha})")
+
+                    # Generate chirp
+                    _, chirp, _ = cs.generate_lfm_chirp(
+                        f_lo, f_hi, dur_ms, cs.DODOMIC_SAMPLE_RATE,
+                        amplitude_shape='alpha_comp',
+                        piezo_response=piezo_response,
+                        window='tukey', alpha=alpha)
+
+                    sdg_buf, _ = cs.create_sdg_buffer(chirp, dur_ms)
+                    wf_name = ('a' + label.replace('.', 'p').replace('-', 'm'))[:15]
+                    sdg.upload_waveform(wf_name, sdg_buf, rr, ampl_vpp=2.0)
+                    sdg.output_on()
+                    time.sleep(0.3)
+                    received = cs.record_audio(pa, mic_index, RECORD_S)
+                    sdg.output_off()
+
+                    # Save WAV
+                    wav_path = os.path.join(raw_dir, f'{label}_received.wav')
+                    wavfile.write(wav_path, cs.DODOMIC_SAMPLE_RATE,
+                                  (received * 32767).astype(np.int16))
+
+                    # Per-period σ_TOF
+                    tof_mean, tof_std, n_pp, fit_sig = cs.per_period_sigma_tof(
+                        received, rr, analysis_duration_s=3.0)
+                    if tof_std is not None:
+                        fit_s = f"  fit_σ={fit_sig*1000:.0f}ns" if fit_sig else ""
+                        print(f"  σ_TOF={tof_std:.3f}μs  {tof_std/10.3:.4f}°C/ping"
+                              f"  N={n_pp}{fit_s}")
+                    else:
+                        print(f"  σ_TOF: not enough periods (N={n_pp})")
+
+                    # Quick autocorr plot
+                    mf = cs.matched_filter_analysis(received, chirp, f_lo, f_hi)
+                    n50 = int(0.05 * cs.DODOMIC_SAMPLE_RATE)
+                    result = dict(
+                        f_start=f_lo, f_stop=f_hi, bw_hz=bw_hz,
+                        duration_ms=dur_ms, label=label, amp_shape='alpha_comp',
+                        alpha=alpha, bw_tag=bw_tag,
+                        theo_fwhm_us=cs.theoretical_fwhm_us(f_lo, f_hi),
+                        chirp=chirp, received=received[:n50].copy(), mf=mf,
+                        sigma_tof_us=tof_std, n_periods=n_pp,
+                    )
+                    results.append(result)
+                    plot_path = os.path.join(plt_dir, f'{label}.png')
+                    cs.plot_chirp_result(result, (f_lo, f_hi, dur_ms, label, 'alpha_comp'),
+                                         plot_path)
+                    del received
+                    time.sleep(0.3)
+
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return 1
+    finally:
+        if sdg: sdg.output_off(); sdg.disconnect()
+        if pa:  pa.terminate()
+
+    # Summary table
+    print(f"\n{'='*90}")
+    print(f"{'Label':<28} {'α':>5} {'BW':>6} {'dur':>5} {'σ_TOF μs':>10} {'°C/ping':>9} {'FWHM μs':>9}")
+    print('-'*90)
+    rows = []
+    for r in results:
+        s = r['sigma_tof_us']
+        f = r['mf']['fwhm_us']
+        rows.append((s or 999, r))
+    rows.sort(key=lambda x: x[0])
+    for _, r in rows:
+        s = r['sigma_tof_us']; f = r['mf']['fwhm_us']
+        print(f"  {r['label']:<26} {r['alpha']:>5.1f} "
+              f"{r['bw_hz']/1000:>5.0f}k {r['duration_ms']:>4.0f}ms "
+              f"{s:>10.3f} {s/10.3:>9.4f} {f:>9.0f}" if s else
+              f"  {r['label']:<26}  N/A")
+
+    # Summary plot (sigma_tof vs alpha, one curve per BW×duration)
+    import matplotlib; matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    for ax, dur_ms in zip(axes, DURATIONS):
+        for bw_tag, bw_hz, f_lo, f_hi in BANDWIDTHS:
+            alphas_plot, sigmas = [], []
+            for r in results:
+                if r['duration_ms'] == dur_ms and r['bw_tag'] == bw_tag and r['sigma_tof_us']:
+                    alphas_plot.append(r['alpha'])
+                    sigmas.append(r['sigma_tof_us'])
+            if alphas_plot:
+                ax.plot(alphas_plot, sigmas, 'o-', lw=1.5, ms=6,
+                        label=f'{bw_hz/1000:.0f} kHz BW')
+        ax.set_xlabel('Alpha (compensation exponent)')
+        ax.set_ylabel('σ_TOF (μs)')
+        ax.set_title(f'Duration = {dur_ms:.0f} ms')
+        ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+        ax.set_xticks(ALPHAS)
+    fig.suptitle('Alpha sweep: H(f)^{-α} compensation vs σ_TOF', fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(os.path.join(plt_dir, 'alpha_summary.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+
+    print(f'\nResults in: {run_dir}')
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(main())

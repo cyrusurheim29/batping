@@ -72,14 +72,30 @@ def hp_filter(sig, fs):
 
 
 def parabolic_peak(env):
-    """Sub-sample peak position via parabolic interpolation. Returns (peak_idx_float, peak_val)."""
+    """
+    11-point least-squares parabolic fit centered on argmax (±5 samples).
+    Returns (peak_idx_float, peak_val, sigma_samples):
+      peak_idx_float — refined sub-sample peak index
+      peak_val       — fitted peak amplitude
+      sigma_samples  — 1-sigma fit uncertainty on peak position (in samples)
+    Falls back gracefully if array is too short.
+    """
     idx = int(np.argmax(env))
-    if idx < 1 or idx >= len(env) - 1:
-        return float(idx), float(env[idx])
-    ym, y0, yp = env[idx-1], env[idx], env[idx+1]
-    denom = 2 * (ym - 2*y0 + yp)
-    delta = np.clip((ym - yp) / denom, -0.5, 0.5) if abs(denom) > 1e-10 else 0.0
-    return float(idx) + delta, float(y0 - (ym - yp) * delta / 4)
+    hw = 5
+    lo, hi = max(0, idx - hw), min(len(env), idx + hw + 1)
+    x = np.arange(lo, hi, dtype=float) - idx
+    y = env[lo:hi]
+    if len(y) < 5 or np.ptp(y) < 1e-12 or (lo == 0 and idx < 1):
+        return float(idx), float(env[idx]), 0.5
+    coeffs, residuals, _, _, _ = np.polyfit(x, y, 2, full=True)
+    a, b, _ = coeffs
+    if abs(a) < 1e-10:
+        return float(idx), float(env[idx]), 0.5
+    delta = float(np.clip(-b / (2 * a), -hw, hw))
+    peak_val = float(np.polyval(coeffs, delta))
+    rms = float(np.sqrt(residuals[0] / len(y))) if len(residuals) > 0 else 0.1
+    sigma = rms / (abs(a) * float(np.sqrt(np.sum(x ** 2))))
+    return float(idx) + delta, peak_val, sigma
 
 
 def incident_peak_sample(inc_window):
@@ -109,13 +125,13 @@ def align_to_ref(window, peak_idx, ref_idx):
 def xcorr_lag_us(signal_seg, template, fs, search_radius_us=200.0):
     """
     Cross-correlate signal_seg with template.
-    Returns the lag (μs) of the best-matching peak via weighted centroid of
-    the Hilbert envelope — robust for broad, flat peaks where 3-point parabolic
-    interpolation is noise-dominated.
+    Returns (lag_us, xc, env, sigma_us):
+      lag_us    — peak lag in μs via 11-point parabolic fit on Hilbert envelope
+      xc        — raw cross-correlation array
+      env       — normalised Hilbert envelope of xc
+      sigma_us  — 1-sigma fit uncertainty on lag_us (μs)
 
     search_radius_us: half-width of search window around lag=0.
-    Should be ~FWHM/2 so the centroid captures the full peak shape.
-    Default 200μs works for typical chirp FWHM of 100-400μs.
     """
     xc = correlate(signal_seg, template, mode='full')
     env = np.abs(hilbert(xc))
@@ -127,19 +143,29 @@ def xcorr_lag_us(signal_seg, template, fs, search_radius_us=200.0):
     lo = max(0, center - radius_samples)
     hi = min(len(env) - 1, center + radius_samples)
     search_env = env[lo:hi+1]
-    lags_samples = np.arange(lo, hi+1, dtype=float)
 
-    # Weighted centroid — uses all information in the peak, not just 3 points.
-    # Robust for broad peaks where parabolic fit sees <10% curvature variation.
-    weights = search_env ** 2   # square-weight to emphasise the peak
-    w_sum = np.sum(weights)
-    if w_sum > 1e-12:
-        peak_idx = float(np.sum(weights * lags_samples) / w_sum)
+    # 11-point parabolic fit on the envelope peak
+    idx = int(np.argmax(search_env))
+    hw = 5
+    sl, sh = max(0, idx - hw), min(len(search_env), idx + hw + 1)
+    x = np.arange(sl, sh, dtype=float) - idx
+    y = search_env[sl:sh]
+    step_us = 1e6 / fs   # μs per sample
+    if len(y) >= 5 and np.ptp(y) > 1e-12:
+        coeffs, residuals, _, _, _ = np.polyfit(x, y, 2, full=True)
+        a, b = coeffs[0], coeffs[1]
+        if abs(a) > 1e-10:
+            dl = float(np.clip(-b / (2 * a), -hw, hw))
+            peak_idx = float(lo + idx) + dl
+            rms = float(np.sqrt(residuals[0] / len(y))) if len(residuals) > 0 else step_us * 0.1
+            sigma_us = rms / (abs(a) * float(np.sqrt(np.sum(x ** 2)))) * step_us
+        else:
+            peak_idx = float(lo + idx); sigma_us = step_us
     else:
-        peak_idx = float(center)
+        peak_idx = float(lo + idx); sigma_us = step_us
 
     lag_us = (peak_idx - center) / fs * 1e6
-    return lag_us, xc, env
+    return lag_us, xc, env, sigma_us
 
 
 def detect_windows(period_data, fs, win_half_width_ms=WIN_HALF_WIDTH_MS,
@@ -147,38 +173,55 @@ def detect_windows(period_data, fs, win_half_width_ms=WIN_HALF_WIDTH_MS,
     """
     Detect incident and reflection windows within a single period.
 
-    Strategy:
-      1. Find the global envelope maximum → this is always the reflected pulse
-         (it has the strongest amplitude, having passed through the piezo twice
-         in the far field, compared to the weak near-field direct-path incident).
-      2. Search for the incident peak at reflected_time - TOF, within ±2ms.
+    Strategy (robust to room echoes):
+      1. Incident = highest peak in the early part of the period
+         (first tof_ms from period start) — the direct-path pulse always
+         arrives before any round-trip reflection can.
+      2. Reflected = highest peak within [incident + tof_ms ± 2ms].
+         This prevents room echoes (which arrive later) from being mistaken
+         for the direct reflection.
       3. Set windows of ±win_half_width_ms around each detected center.
 
     tof_us: approximate expected TOF in μs (default 5700 = 2m bench path).
     """
-    from scipy.signal import find_peaks
-
     env = np.abs(hilbert(period_data))
     env_n = env / np.max(env)
     t_ms = np.arange(len(period_data)) / fs * 1000
     period_ms = len(period_data) / fs * 1000
     tof_ms = tof_us / 1000.0
+    tol_ms = 2.0   # ±2ms tolerance around expected TOF
 
-    # Step 1: reflected = global maximum
-    ref_sample = int(np.argmax(env_n))
-    ref_center_ms = t_ms[ref_sample]
-
-    # Step 2: incident = peak near (reflected_time - TOF)
-    inc_expected_ms = ref_center_ms - tof_ms
-    search_lo = max(0.0, inc_expected_ms - 2.0)
-    search_hi = min(period_ms, inc_expected_ms + 2.0)
-    lo_idx = int(search_lo / 1000 * fs)
-    hi_idx = int(search_hi / 1000 * fs)
-    if hi_idx > lo_idx:
-        inc_sample = lo_idx + int(np.argmax(env_n[lo_idx:hi_idx]))
+    # Step 1: incident = first significant peak in [0, 0.6*tof_ms].
+    # Gate is 60% of expected TOF so the reflected burst (arriving at ~TOF)
+    # cannot bleed into the search window even for long chirps.
+    # Use first-onset detection rather than argmax so a faint incident is
+    # preferred over a strong reflected that falls near the gate edge.
+    inc_gate_hi  = min(period_ms, 0.6 * tof_ms)
+    inc_hi_idx   = max(1, int(inc_gate_hi / 1000 * fs))
+    # Find first sample above 5% of global max → marks incident onset
+    threshold    = 0.05
+    above        = env_n[:inc_hi_idx] > threshold
+    if np.any(above):
+        onset = int(np.argmax(above))
+        # Local max within 5ms of onset
+        search_end = min(inc_hi_idx, onset + int(0.005 * fs))
+        inc_sample = onset + int(np.argmax(env_n[onset:search_end]))
     else:
-        inc_sample = int(ref_sample - tof_ms / 1000 * fs)
-    inc_center_ms = t_ms[max(0, min(inc_sample, len(t_ms)-1))]
+        inc_sample = int(np.argmax(env_n[:inc_hi_idx]))
+    inc_center_ms = float(t_ms[min(inc_sample, len(t_ms) - 1)])
+
+    # Step 2: reflected = highest peak in [inc + tof - tol, inc + tof + tol]
+    ref_expected_ms = inc_center_ms + tof_ms
+    ref_lo = max(0.0, ref_expected_ms - tol_ms)
+    ref_hi = min(period_ms, ref_expected_ms + tol_ms)
+    lo_idx = int(ref_lo / 1000 * fs)
+    hi_idx = max(lo_idx + 1, int(ref_hi / 1000 * fs))
+    hi_idx = min(hi_idx, len(env_n))
+    if hi_idx > lo_idx and np.any(env_n[lo_idx:hi_idx] > 0):
+        ref_sample = lo_idx + int(np.argmax(env_n[lo_idx:hi_idx]))
+    else:
+        ref_sample = int(inc_sample + tof_ms / 1000 * fs)
+    ref_center_ms = float(t_ms[min(ref_sample, len(t_ms) - 1)])
 
     hw = win_half_width_ms
     inc_win = (max(0.0, inc_center_ms - hw), min(period_ms, inc_center_ms + hw))
@@ -235,6 +278,23 @@ def extract_window(period_data, fs, win_ms):
     return period_data[s:e]
 
 
+def mask_period(period_data, fs, win_ms):
+    """Return a full-period copy with everything outside win_ms zeroed.
+
+    This preserves absolute timing: both incident and reflected masks live in the
+    same period-length time frame, so xcorr with the co-added template gives a peak
+    at lag=0 when perfectly aligned — making tau_launch a clean diagnostic of
+    unaccounted jitter rather than an arbitrary offset.
+    """
+    out = np.zeros_like(period_data)
+    s = int(win_ms[0] / 1000 * fs)
+    e = int(win_ms[1] / 1000 * fs)
+    s = max(0, min(s, len(period_data) - 1))
+    e = max(s + 1, min(e, len(period_data)))
+    out[s:e] = period_data[s:e]
+    return out
+
+
 # ── Main analysis ──────────────────────────────────────────────────────────────
 
 def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
@@ -269,136 +329,147 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
         incident_win_ms, reflection_win_ms = detect_windows(
             first_period, fs, win_half_width_ms)
 
-    # Extract windows from all periods (real signal)
-    inc_segs  = []
-    ref_segs  = []
-    for (s, e) in slices:
-        period = sig[s:e]
-        inc_segs.append(extract_window(period, fs, incident_win_ms))
-        ref_segs.append(extract_window(period, fs, reflection_win_ms))
-
-    # Pad to common length within each group
-    def pad_list(segs):
-        L = min(len(s) for s in segs)
-        return np.array([s[:L] for s in segs])
-
-    inc_arr = pad_list(inc_segs)
-    ref_arr = pad_list(ref_segs)
-
-    # ── Coherent sub-sample alignment before co-adding ───────────────────────
-    # The SDG and UltraMic run on independent clocks (~100 ppm each), causing
-    # ~1 μs/period monotonic drift. Over 100 periods that is ~100 μs = 4 carrier
-    # cycles of phase spread, causing destructive cancellation in a naive co-add.
+    # ── Coherent alignment before co-adding — full-period approach ───────────
     #
-    # Fix: cross-correlate each reflected window with period 0 using parabolic
-    # sub-sample peak interpolation to get fractional shift s_i (in samples),
-    # then apply s_i via FFT phase shift — exact for bandlimited signals.
-    # The same shift is applied to both inc and ref (preserving relative TOF).
+    # We follow Stubbs's recommendation: keep incident and reflected as two separate
+    # but TIME-SYNCED vectors living in the same full-period frame.  Each period is
+    # drift-corrected (LINEAR shift so the burst stays at the period-0 position, then
+    # sub-sample FFT shift for the fractional residual), then the relevant window is
+    # masked to zero outside it.  Co-adding these full-period masked vectors builds
+    # T_launch and T_return.  xcorr of any evaluation period against T_launch/T_return
+    # then peaks at lag=0 when alignment is perfect → tau_launch is a clean jitter
+    # diagnostic (non-zero tau_launch = unaccounted timing noise).
+    #
+    # KEY IMPLEMENTATION DETAIL: the FFT-based shift is a CIRCULAR shift, which
+    # wraps the burst to the wrong place when the total drift is large (>half the
+    # period).  We use a LINEAR shift (zero-padding at boundaries) for the integer
+    # part, reserving FFT shift only for the sub-sample residual (always <0.5 samples).
+    #
+    # Alignment is computed from FULL-PERIOD cross-correlations (not short windows),
+    # so the burst is always present in the xcorr regardless of how much it has
+    # drifted within the period.  scipy.signal.correlate uses FFT internally so this
+    # is fast even for period_idx ~ 7000 samples.
+
+    period_idx = slices[0][1] - slices[0][0]  # all slices are the same length
 
     def fft_shift(x, s):
-        """Shift signal x by s samples (sub-sample precision) via FFT phase ramp."""
+        """Sub-sample shift of x by s samples via FFT phase ramp (circular — small s only)."""
         N = len(x)
         X = np.fft.rfft(x, n=N)
-        freqs = np.fft.rfftfreq(N)
-        X *= np.exp(-2j * np.pi * freqs * s)
+        X *= np.exp(-2j * np.pi * np.fft.rfftfreq(N) * s)
         return np.fft.irfft(X, n=N)
 
-    ref0 = ref_arr[0].copy()
-    shifts_frac = np.zeros(n_periods)   # sub-sample shifts in samples
-    radius = int(0.002 * fs)            # ±2ms bootstrap search window
-    center_idx = len(ref0) - 1          # lag=0 index in 'full' correlation
+    def linear_shift(x, s):
+        """Integer-sample LINEAR shift (zero-padding, no wrap). Positive s = shift right."""
+        s = int(round(s))
+        n = len(x)
+        out = np.zeros(n, dtype=x.dtype)
+        if s > 0 and s < n:
+            out[s:] = x[:n - s]
+        elif s < 0 and -s < n:
+            out[:n + s] = x[-s:]
+        else:
+            out[:] = x
+        return out
 
-    # ── Adaptive search window alignment ─────────────────────────────────────
-    # The two clocks (SDG + UltraMic) drift at ~3–4 μs/period. After ~9s the
-    # accumulated drift exceeds the chirp correlation length (~2ms), causing the
-    # standard ±2ms search to find carrier-ripple noise instead of the true peak.
-    #
-    # Fix — two phases:
-    #   Phase 1 (bootstrap): compute shifts for the first N_BOOT periods using
-    #     the standard ±2ms window. Here the drift is small and xcorr is reliable.
-    #   Phase 2 (adaptive): fit a line to the bootstrap shifts to estimate the
-    #     drift rate. For all subsequent periods, CENTER the search window on the
-    #     PREDICTED shift. With a ±300 μs narrow window around the prediction, the
-    #     true peak always dominates over carrier ripple (only ~12 carrier cycles in
-    #     the window instead of ~160), enabling reliable alignment for the full
-    #     recording duration regardless of total accumulated drift.
+    def apply_correction(period, shift_s):
+        """Drift-correct a full period: linear shift for integer part, fft_shift for fraction."""
+        s_int  = int(round(shift_s))
+        s_frac = shift_s - s_int
+        out = linear_shift(period, -s_int)          # move burst left to period-0 position
+        if abs(s_frac) > 1e-6:
+            out = fft_shift(out, -s_frac)           # sub-sample residual (always <0.5 samples)
+        return out
 
-    N_BOOT = 50            # bootstrap periods — shift < 50×4μs = 200μs, well in range
-    narrow = int(0.0003 * fs)   # ±300 μs narrow window for adaptive phase
+    # Reference = full period 0 (unmasked) — burst is always present for xcorr
+    ref0_full = sig[slices[0][0]:slices[0][1]].copy()
+    center_idx = period_idx - 1          # lag=0 index in mode='full' correlation
+    shifts_frac = np.zeros(n_periods)
+
+    radius = int(0.002 * fs)             # ±2 ms bootstrap search window
+    N_BOOT = 50
+    narrow = int(0.0003 * fs)            # ±300 μs adaptive search window
 
     def find_shift(xc, lo, hi):
-        """Find sub-sample shift within xc[lo:hi] using Hilbert envelope + parabola."""
         env = np.abs(hilbert(xc[lo:hi]))
         lp  = int(np.argmax(env))
-        if 0 < lp < len(env) - 1:
-            ym, y0, yp = env[lp-1], env[lp], env[lp+1]
-            dn = 2*(ym - 2*y0 + yp)
-            dl = np.clip((ym-yp)/dn, -0.5, 0.5) if abs(dn) > 1e-10 else 0.0
-            return (lp + dl + lo) - center_idx
+        hw = 5
+        sl, sh = max(0, lp - hw), min(len(env), lp + hw + 1)
+        x = np.arange(sl, sh, dtype=float) - lp
+        y = env[sl:sh]
+        if len(y) >= 5 and np.ptp(y) > 1e-12:
+            coeffs = np.polyfit(x, y, 2)
+            a, b = coeffs[0], coeffs[1]
+            if abs(a) > 1e-10:
+                dl = float(np.clip(-b / (2 * a), -hw, hw))
+                return (lp + dl + lo) - center_idx
         return float(lp + lo - center_idx)
 
-    # Phase 1: bootstrap with wide window
+    # Phase 1: bootstrap — xcorr full periods (burst always in frame)
     boot_end = min(N_BOOT + 1, n_periods)
     for i in range(1, boot_end):
-        xc = np.correlate(ref_arr[i], ref0, mode='full')
+        period_i = sig[slices[i][0]:slices[i][1]]
+        xc = correlate(period_i, ref0_full, mode='full')
         lo = max(0, center_idx - radius)
         hi = min(len(xc), center_idx + radius)
         shifts_frac[i] = find_shift(xc, lo, hi)
 
-    # Estimate drift rate from bootstrap (samples/period)
-    boot_idx = np.arange(1, boot_end, dtype=float)
+    boot_idx  = np.arange(1, boot_end, dtype=float)
     drift_rate = np.polyfit(boot_idx, shifts_frac[1:boot_end], 1)[0]
-    drift_rate_us = drift_rate * 1e6 / fs
 
-    # Phase 2: adaptive with continuously-updated drift rate.
-    # A fixed rate estimated from 50 periods has ~3% error from crystal warming,
-    # accumulating to ~100μs after 9s and pushing the true peak outside the window.
-    # Fix: exponential moving average (EMA) on the instantaneous rate measured each
-    # period. With tau_ema = 200 periods, the rate tracks gradual hardware warm-up
-    # without being corrupted by per-period xcorr noise.
-    EMA_TAU = 200.0   # time constant in periods (~3.4s)
-    alpha   = 1.0 / EMA_TAU
-    ema_rate = drift_rate   # initialise from bootstrap
+    # Phase 2: adaptive EMA — still xcorr full periods, narrow search window
+    EMA_TAU  = 200.0
+    ema_rate = drift_rate
+    alpha_ema = 1.0 / EMA_TAU
 
     for i in range(boot_end, n_periods):
-        predicted   = ema_rate * i              # predicted total shift (samples)
+        predicted   = ema_rate * i
         pred_center = center_idx + int(round(predicted))
-        xc = np.correlate(ref_arr[i], ref0, mode='full')
+        period_i    = sig[slices[i][0]:slices[i][1]]
+        xc = correlate(period_i, ref0_full, mode='full')
         lo = max(0, pred_center - narrow)
         hi = min(len(xc), pred_center + narrow)
         shifts_frac[i] = find_shift(xc, lo, hi)
-        # Update rate estimate: instantaneous rate = shift / period_index
         inst_rate = shifts_frac[i] / i
-        ema_rate  = (1 - alpha) * ema_rate + alpha * inst_rate
+        ema_rate  = (1 - alpha_ema) * ema_rate + alpha_ema * inst_rate
 
     drift_us = shifts_frac * 1e6 / fs
     print(f"  Clock drift: rate={ema_rate*1e6/fs:.3f} μs/period  "
           f"total={drift_us[-1]:.1f} μs  "
           f"(adaptive + EMA rate update τ={EMA_TAU:.0f}p)")
 
-    inc_aligned = np.array([fft_shift(row, -shifts_frac[i]) for i, row in enumerate(inc_arr)])
-    ref_aligned = np.array([fft_shift(row, -shifts_frac[i]) for i, row in enumerate(ref_arr)])
-
-    # Build templates from first n_template coherently aligned periods
-    T_launch = np.mean(inc_aligned[:n_template], axis=0)
-    T_return = np.mean(ref_aligned[:n_template], axis=0)
+    # Build templates: drift-correct each period (linear+fft), then mask
+    T_launch_acc = np.zeros(period_idx)
+    T_return_acc = np.zeros(period_idx)
+    for i in range(n_template):
+        corrected = apply_correction(sig[slices[i][0]:slices[i][1]], shifts_frac[i])
+        T_launch_acc += mask_period(corrected, fs, incident_win_ms)
+        T_return_acc += mask_period(corrected, fs, reflection_win_ms)
+    T_launch = T_launch_acc / n_template
+    T_return = T_return_acc / n_template
     print(f"  Templates built from {n_template} aligned periods  "
           f"(incident {incident_win_ms[0]:.2f}–{incident_win_ms[1]:.2f} ms, "
           f"reflection {reflection_win_ms[0]:.2f}–{reflection_win_ms[1]:.2f} ms)")
     print(f"  T_launch peak: {np.max(np.abs(T_launch)):.4f}  "
           f"T_return peak: {np.max(np.abs(T_return)):.4f}")
 
-    # Evaluate: cross-correlate each aligned period's reflected window with T_return.
-    # τ_return ≈ residual shift after alignment = temperature-driven TOF change.
-    # τ_launch ≈ 0 by construction (alignment was done on reflected, not incident,
-    # but both shift together since same clock drives both pulses in the period).
+    # Evaluate: drift-correct each evaluation period, mask, xcorr with templates.
+    # tau_launch should be near 0 if alignment is good — it is the jitter diagnostic.
+    # tau_return - tau_launch = differential TOF = temperature signal.
     tau_launch_list = []
     tau_return_list = []
+    sigma_launch_list = []
+    sigma_return_list = []
     for i in range(n_template, n_periods):
-        τl, _, _ = xcorr_lag_us(inc_aligned[i], T_launch, fs)
-        τr, xc_r, env_r = xcorr_lag_us(ref_aligned[i], T_return, fs)
+        corrected = apply_correction(sig[slices[i][0]:slices[i][1]], shifts_frac[i])
+        inc_m = mask_period(corrected, fs, incident_win_ms)
+        ref_m = mask_period(corrected, fs, reflection_win_ms)
+        τl, _, _, σl = xcorr_lag_us(inc_m, T_launch, fs)
+        τr, xc_r, env_r, σr = xcorr_lag_us(ref_m, T_return, fs)
         tau_launch_list.append(τl)
         tau_return_list.append(τr)
+        sigma_launch_list.append(σl)
+        sigma_return_list.append(σr)
 
     tau_launch = np.array(tau_launch_list)
     tau_return = np.array(tau_return_list)
@@ -410,21 +481,25 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
     temp_precision = std_dt / TOF_SENS_US_PER_DEG
 
     print(f"\n  Evaluation periods: {n_eval}")
+    mean_fit_sigma = float(np.mean(sigma_launch_list + sigma_return_list)) if sigma_launch_list else None
     print(f"  τ_launch:  mean={np.mean(tau_launch):.2f} μs  σ={np.std(tau_launch):.3f} μs")
     print(f"  τ_return:  mean={np.mean(tau_return):.2f} μs  σ={np.std(tau_return):.3f} μs")
     print(f"  Δτ = τ_return - τ_launch:")
     print(f"    mean = {mean_dt:.3f} μs  (non-zero → temp offset from reference)")
     print(f"    σ    = {std_dt:.3f} μs  →  {temp_precision:.4f} °C per ping")
+    if mean_fit_sigma is not None:
+        print(f"    fit σ_peak = {mean_fit_sigma*1000:.0f} ns  (11-pt parabola residual)")
 
     # ── Plot ──────────────────────────────────────────────────────────────────
     t_launch_ms = np.arange(len(T_launch)) / fs * 1000
     t_return_ms = np.arange(len(T_return)) / fs * 1000
 
     # Example xcorr from the last evaluation period
-    y_launch_ex = inc_arr[-1]
-    y_return_ex = ref_arr[-1]
-    τl_ex, xc_l_ex, env_l_ex = xcorr_lag_us(y_launch_ex, T_launch, fs)
-    τr_ex, xc_r_ex, env_r_ex = xcorr_lag_us(y_return_ex, T_return, fs)
+    last_corrected = apply_correction(sig[slices[-1][0]:slices[-1][1]], shifts_frac[-1])
+    y_launch_ex = mask_period(last_corrected, fs, incident_win_ms)
+    y_return_ex = mask_period(last_corrected, fs, reflection_win_ms)
+    τl_ex, xc_l_ex, env_l_ex, _ = xcorr_lag_us(y_launch_ex, T_launch, fs)
+    τr_ex, xc_r_ex, env_r_ex, _ = xcorr_lag_us(y_return_ex, T_return, fs)
     lags_l = (np.arange(len(xc_l_ex)) - (len(T_launch) - 1)) / fs * 1e6
     lags_r = (np.arange(len(xc_r_ex)) - (len(T_return) - 1)) / fs * 1e6
 
@@ -486,6 +561,7 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
         mean_delta_tau_us=mean_dt, std_delta_tau_us=std_dt,
         temp_precision_C=temp_precision, n_template=n_template, n_eval=n_eval,
         fs=fs, incident_win_ms=incident_win_ms, reflection_win_ms=reflection_win_ms,
+        mean_fit_sigma_us=mean_fit_sigma,
     )
 
 

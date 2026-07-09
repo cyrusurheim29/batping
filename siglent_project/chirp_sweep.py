@@ -49,30 +49,28 @@ PIEZO_CHAR_FILE  = OUTPUT_DIR + 'stepped_sine_characterization.npz'
 VERSION          = "V1"
 
 # ── Chirp configurations ──────────────────────────────────────────────────────
-# (f_start Hz, f_stop Hz, duration_ms, label, amplitude_shape)
-# amplitude_shape: 'flat' | 'piezo_compensated'
-#
-# Bandwidth sweep: all 10 ms, centered at 41350 Hz; from within -3dB BW
-# outward to explore how much of the wide-band chirp the piezo actually passes.
-# Duration sweep: fixed 3.75 kHz (actual -6dB BW), vary 2/5/10 ms.
-# Compensated: pre-distort envelope so transmitted spectrum is flatter.
+# (f_start Hz, f_stop Hz, duration_ms, label, amplitude_shape, window, ampl_vpp)
+# ampl_vpp: SDG output voltage — scaled per-waveform so received signal reaches
+#   ~85% of UltraMic full scale.  Measured July 8 from evening recordings at 2Vpp;
+#   new voltages = 2.0 × (0.85 / peak_amplitude_observed).
+#   The flat 6kHz is reduced because it was already near clipping.
 CHIRP_CONFIGS = [
     # 30s recordings → ~1800 periods at ~60Hz: 100 for Stubbs template + 1700 eval.
-    # Best 5 configs from July 5 re-recorded, plus 2 reduced-compensation variants
-    # ('piezo_compensated_light': 20% floor = 14dB max vs standard 10% = 20dB).
 
-    # ── Best performers from July 5 — re-recorded for Stubbs analysis ────────
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp',      'piezo_compensated',       'tukey'),  # σ=0.29μs
-    (28975, 53975, 2.0, 'bw_25kHz_wide_2ms_comp',       'piezo_compensated',       'tukey'),  # σ=0.41μs
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_rect',  'piezo_compensated',       'rect'),   # σ=0.27μs
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp',       'piezo_compensated',       'tukey'),  # σ=0.49μs
-    (38475, 44475, 2.0, 'bw_6kHz_sym_2ms_flat',         'flat',                    'tukey'),  # σ=0.43μs, reference
+    # ── Best performers — Stubbs analysis configs ─────────────────────────────
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp',      'piezo_compensated',       'tukey', 4.71),
+    (28975, 53975, 2.0, 'bw_25kHz_wide_2ms_comp',       'piezo_compensated',       'tukey', 4.75),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_rect',  'piezo_compensated',       'rect',  4.33),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp',       'piezo_compensated',       'tukey', 3.70),
+    (38475, 44475, 2.0, 'bw_6kHz_sym_2ms_flat',         'flat',                    'tukey', 1.86),
 
     # ── Reduced-compensation variants (20% floor = 14dB max boost) ───────────
-    # Tests whether aggressive compensation (10% floor, 20dB) degrades Stubbs
-    # template consistency via period-to-period shape variation from piezo memory.
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp_light', 'piezo_compensated_light', 'tukey'),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_light', 'piezo_compensated_light', 'tukey'),
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp_light', 'piezo_compensated_light', 'tukey', 4.19),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_light', 'piezo_compensated_light', 'tukey', 4.02),
+
+    # ── Diffraction-compensated variants ──────────────────────────────────────
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_diff', 'piezo_compensated_diffraction', 'tukey', 4.43),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_diff', 'piezo_compensated_diffraction', 'tukey', 3.79),
 ]
 
 # TOF search window for 2 m round trip (~5800 μs)
@@ -160,7 +158,7 @@ def load_piezo_response():
 
 def generate_lfm_chirp(f_start, f_stop, duration_ms, sample_rate,
                        amplitude_shape='flat', piezo_response=None,
-                       window='tukey'):
+                       window='tukey', alpha=1.0):
     """
     Generate LFM (up-)chirp from f_start to f_stop over duration_ms.
 
@@ -185,6 +183,22 @@ def generate_lfm_chirp(f_start, f_stop, duration_ms, sample_rate,
         floor = 0.10 if amplitude_shape == 'piezo_compensated' else 0.20  # 10%=20dB, 20%=14dB
         mag = np.clip(mag, floor, None)
         amp_env = AMPLITUDE / mag
+        amp_env = amp_env / np.max(amp_env) * AMPLITUDE
+    elif amplitude_shape == 'alpha_comp' and piezo_response is not None:
+        # amp(f) ∝ H(f)^{-alpha}: alpha=0 → flat, alpha=1 → full 1/H
+        # Smooth power-law, no hard floor — avoids ring-down overexcitation at high alpha
+        mag = np.interp(f_inst, piezo_response['freq'], piezo_response['magnitude'])
+        mag = np.clip(mag, 0.05, None)   # soft floor at -26 dB to avoid numeric blowup
+        amp_env = mag ** (-alpha)
+        amp_env = amp_env / np.max(amp_env) * AMPLITUDE
+    elif amplitude_shape == 'piezo_compensated_diffraction' and piezo_response is not None:
+        # 1/H(f) compensation + 1/λ = f/c diffraction pre-emphasis (two-way amplitude loss ∝ c/f).
+        # Normalise diffraction factor to 1 at band centre so the floor clipping is meaningful.
+        f_center = (f_start + f_stop) / 2.0
+        mag = np.interp(f_inst, piezo_response['freq'], piezo_response['magnitude'])
+        diffraction = f_inst / f_center      # >1 for high f (needs less boost), <1 for low f
+        effective_mag = np.clip(mag / diffraction, 0.20, None)   # 20% floor = 14 dB max
+        amp_env = AMPLITUDE / effective_mag
         amp_env = amp_env / np.max(amp_env) * AMPLITUDE
     else:
         amp_env = AMPLITUDE
@@ -256,6 +270,56 @@ def record_audio(pa, mic_index, duration=RECORD_DURATION):
     return np.frombuffer(b''.join(frames), dtype=np.int16).astype(np.float64) / 32768.0
 
 
+def record_period_by_period(pa, mic_index, rep_rate, n_periods, mode='A', settle_s=2.0):
+    """
+    Record n_periods independent periods, one at a time.
+
+    mode='A': stream stays open for the whole run; 2 s settle once at the start.
+              Avoids per-period stream latency overhead.  SDG runs continuously.
+    mode='B': stream is opened and closed for every period; settle_s wait each time.
+              Cleanest isolation — no inter-period memory in the USB driver.
+
+    Returns array of shape (n_periods, period_samples).
+    Each row is one period ready to be saved as its own WAV.
+    """
+    period_samples = int(DODOMIC_SAMPLE_RATE / rep_rate)
+    periods = []
+
+    def _open_stream():
+        return pa.open(format=pyaudio.paInt16, channels=1,
+                       rate=DODOMIC_SAMPLE_RATE, input=True,
+                       input_device_index=mic_index,
+                       frames_per_buffer=CHUNK_SIZE)
+
+    def _read_period(stream):
+        frames, remaining = [], period_samples
+        while remaining > 0:
+            chunk = min(CHUNK_SIZE, remaining)
+            frames.append(stream.read(chunk, exception_on_overflow=False))
+            remaining -= chunk
+        raw = np.frombuffer(b''.join(frames), dtype=np.int16).astype(np.float64)
+        return raw / 32768.0
+
+    if mode == 'A':
+        stream = _open_stream()
+        time.sleep(settle_s)
+        for i in range(n_periods):
+            periods.append(_read_period(stream))
+            if (i + 1) % 10 == 0:
+                print(f'    ppp-A: {i+1}/{n_periods} periods', flush=True)
+        stream.stop_stream(); stream.close()
+    else:  # mode B
+        for i in range(n_periods):
+            stream = _open_stream()
+            time.sleep(settle_s)
+            periods.append(_read_period(stream))
+            stream.stop_stream(); stream.close()
+            if (i + 1) % 5 == 0:
+                print(f'    ppp-B: {i+1}/{n_periods} periods', flush=True)
+
+    return np.array(periods)   # (n_periods, period_samples)
+
+
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
 def bandpass_filter(sig, fs, f_low, f_high, order=4):
@@ -281,6 +345,40 @@ def find_peak_parabolic(envelope, lags_us, search_min_us, search_max_us):
     peak_us = float(lags_reg[idx]) + delta * step
     peak_v  = float(y_0 - (y_m - y_p) * delta / 4)
     return peak_us, peak_v
+
+
+def find_peak_parabolic_11pt(envelope, lags_us, search_min_us, search_max_us):
+    """
+    Argmax then 11-point least-squares parabolic fit (±5 samples around peak).
+    Returns (peak_us, peak_val, sigma_peak_us):
+      peak_us       — refined TOF estimate (μs)
+      peak_val      — fitted peak amplitude
+      sigma_peak_us — 1-sigma uncertainty on peak position from fit residuals (μs)
+    Returns (None, None, None) if region is empty or fit is degenerate.
+    """
+    mask = (lags_us >= search_min_us) & (lags_us <= search_max_us)
+    if not np.any(mask):
+        return None, None, None
+    region, lags_r = envelope[mask], lags_us[mask]
+    idx = int(np.argmax(region))
+    step = float(lags_r[1] - lags_r[0])    # μs per sample
+    hw = 5
+    lo, hi = max(0, idx - hw), min(len(region), idx + hw + 1)
+    x = np.arange(lo, hi, dtype=float) - idx   # sample offsets centred at argmax
+    y = region[lo:hi]
+    if len(y) < 5 or np.ptp(y) < 1e-12:
+        return float(lags_r[idx]), float(region[idx]), step
+    coeffs, residuals, _, _, _ = np.polyfit(x, y, 2, full=True)
+    a, b, _ = coeffs
+    if abs(a) < 1e-10:
+        return float(lags_r[idx]), float(region[idx]), step
+    delta = float(np.clip(-b / (2 * a), -hw, hw))   # sub-sample offset from idx
+    peak_us  = float(lags_r[idx]) + delta * step
+    peak_val = float(np.polyval(coeffs, delta))
+    # σ_peak = rms_residual / (|a| × sqrt(Σx²)) in samples, converted to μs
+    rms = float(np.sqrt(residuals[0] / len(y))) if len(residuals) > 0 else step * 0.1
+    sigma_peak_us = rms / (abs(a) * float(np.sqrt(np.sum(x ** 2)))) * step
+    return peak_us, peak_val, sigma_peak_us
 
 
 def measure_fwhm_at(envelope, lags_us, peak_us):
@@ -318,7 +416,7 @@ def per_period_sigma_tof(received, rep_rate, tof_min_us=5000, tof_max_us=6500,
     first = np.argmax(above)
     T0 = (start_idx + first) - int(0.008 * fs) if above[first] else 0
     if T0 < 0: T0 = 0
-    tofs = []
+    tofs = []; fit_sigmas = []
     for i in range((len(sig) - T0) // period_idx - 1):
         seg = sig[T0 + i*period_idx : T0 + (i+1)*period_idx]
         ac = np.correlate(seg, seg, mode='full')
@@ -326,18 +424,17 @@ def per_period_sigma_tof(received, rep_rate, tof_min_us=5000, tof_max_us=6500,
         lu = (np.arange(len(ac)) - ctr) / fs * 1e6
         ac /= np.max(np.abs(ac))
         ev = np.abs(hilbert(ac)); ev /= np.max(ev)
-        m = (lu >= tof_min_us) & (lu <= tof_max_us)
-        if not np.any(m): continue
-        ix = np.argmax(ev[m]); r = ev[m]; lg = lu[m]
-        if ix < 1 or ix >= len(r) - 1: tofs.append(lg[ix]); continue
-        ym, y0, yp = r[ix-1], r[ix], r[ix+1]
-        dn = 2 * (ym - 2*y0 + yp)
-        dl = np.clip((ym - yp) / dn, -0.5, 0.5) if abs(dn) > 1e-10 else 0.0
-        tofs.append(float(lg[ix]) + dl * (lg[1] - lg[0]))
+        peak_us, _, sigma_us = find_peak_parabolic_11pt(ev, lu, tof_min_us, tof_max_us)
+        if peak_us is None:
+            continue
+        tofs.append(peak_us)
+        if sigma_us is not None:
+            fit_sigmas.append(sigma_us)
     tofs = np.array(tofs)
     if len(tofs) < 3:
-        return None, None, len(tofs)
-    return float(np.mean(tofs)), float(np.std(tofs)), len(tofs)
+        return None, None, len(tofs), None
+    mean_fit_sigma = float(np.mean(fit_sigmas)) if fit_sigmas else None
+    return float(np.mean(tofs)), float(np.std(tofs)), len(tofs), mean_fit_sigma
 
 
 def hp_filter_30k(sig, fs, order=8):
@@ -610,8 +707,21 @@ def plot_sweep_summary(results, output_path):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='LFM Chirp Sweep')
+    parser.add_argument('--ppp-mode', choices=['none', 'A', 'B'], default='none',
+                        help='Period-by-period recording: none=30s continuous (default), '
+                             'A=stream-open loop, B=stream-restart per period')
+    parser.add_argument('--ppp-n', type=int, default=100,
+                        help='Number of periods to record in ppp mode (default 100)')
+    parser.add_argument('--ppp-settle', type=float, default=2.0,
+                        help='Settle time (s) after opening stream in ppp mode (default 2.0)')
+    args = parser.parse_args()
+
     print('=' * 60)
     print(f'LFM Chirp Sweep ({VERSION})')
+    if args.ppp_mode != 'none':
+        print(f'  Period-by-period mode {args.ppp_mode}: {args.ppp_n} periods, settle={args.ppp_settle}s')
     print('=' * 60)
 
     piezo_response = load_piezo_response()
@@ -653,7 +763,8 @@ def main():
 
         for cfg in CHIRP_CONFIGS:
             f_start, f_stop, dur_ms, label, amp_shape = cfg[:5]
-            win = cfg[5] if len(cfg) > 5 else 'tukey'
+            win      = cfg[5] if len(cfg) > 5 else 'tukey'
+            ampl_vpp = cfg[6] if len(cfg) > 6 else 2.0
 
             if amp_shape == 'piezo_compensated' and piezo_response is None:
                 print(f'\nSkipping {label} (no piezo response data)')
@@ -663,7 +774,7 @@ def main():
             print(f"\n{'='*55}")
             print(f"  {label}")
             print(f"  {f_start/1000:.2f}–{f_stop/1000:.2f} kHz  |  "
-                  f"BW={bw_hz/1000:.2f} kHz  |  {dur_ms} ms  |  {amp_shape}")
+                  f"BW={bw_hz/1000:.2f} kHz  |  {dur_ms} ms  |  {amp_shape}  |  {ampl_vpp:.2f} Vpp")
             print(f"  Theoretical FWHM: {theoretical_fwhm_us(f_start, f_stop):.0f} μs  |  "
                   f"TBP: {bw_hz * dur_ms / 1000:.0f}")
 
@@ -680,10 +791,23 @@ def main():
 
             # Upload and record
             wf_name = 'ch_' + label.replace('.', 'p').replace('-', 'm')[:15]
-            sdg.upload_waveform(wf_name, sdg_buf, rep_rate, ampl_vpp=2.0)
+            sdg.upload_waveform(wf_name, sdg_buf, rep_rate, ampl_vpp=ampl_vpp)
             sdg.output_on()
             time.sleep(0.3)
-            received = record_audio(pa, mic_index, RECORD_DURATION)
+            if args.ppp_mode == 'none':
+                received = record_audio(pa, mic_index, RECORD_DURATION)
+            else:
+                periods = record_period_by_period(
+                    pa, mic_index, rep_rate, args.ppp_n,
+                    mode=args.ppp_mode, settle_s=args.ppp_settle)
+                # Save individual period WAVs
+                ppp_dir = os.path.join(raw_dir, 'periods', safe)
+                os.makedirs(ppp_dir, exist_ok=True)
+                for pi, p in enumerate(periods):
+                    wavfile.write(os.path.join(ppp_dir, f'{safe}_period_{pi:04d}.wav'),
+                                  DODOMIC_SAMPLE_RATE, (p * 32767).astype(np.int16))
+                # Concatenate for downstream analysis (same interface as continuous)
+                received = periods.flatten()
             sdg.output_off()
 
             # Autocorrelation analysis
@@ -695,9 +819,10 @@ def main():
             print(f"  TOF FWHM: {fwhm_s}    TOF: {tof_s}    SNR: {snr_s}    Theo σ_TOF: {theo_s}")
 
             # Per-period σ_TOF — the real temperature precision metric
-            tof_mean, tof_std, n_pp = per_period_sigma_tof(received, rep_rate)
+            tof_mean, tof_std, n_pp, fit_sig = per_period_sigma_tof(received, rep_rate)
             if tof_std is not None:
-                print(f"  σ_TOF:    {tof_std:.2f} μs / ping  →  {tof_std/10.3:.3f}°C/ping  (N={n_pp})")
+                fit_s = f"  fit σ={fit_sig*1000:.0f} ns" if fit_sig else ""
+                print(f"  σ_TOF:    {tof_std:.2f} μs / ping  →  {tof_std/10.3:.3f}°C/ping  (N={n_pp}){fit_s}")
             else:
                 print(f"  σ_TOF:    not enough periods (N={n_pp})")
 
