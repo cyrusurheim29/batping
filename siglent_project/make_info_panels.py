@@ -118,7 +118,6 @@ def make_info_panel(label, sigma_ac, degc_ac, fwhm,
         ('°C / ping',     f'{degc_ac:.4f}',          True),
         ('FWHM',          f'{fwhm} μs',              False),
         ('δ_peak (DoF=8)',f'{delta_peak_ac:.0f} ns', False),
-        ('SNR (signal)',  f'{snr_db:.1f} dB  ({snr_lin:.0f}×)', False),
         ('SNR (CR)',      f'{snr_cr_lin:.0f}×  ({20*np.log10(snr_cr_lin):.1f} dB)', False),
     ]
     for key, val, red in rows_ac:
@@ -165,7 +164,10 @@ def make_info_panel(label, sigma_ac, degc_ac, fwhm,
         status = 'Stubbs failed (4ms period detection bug)' if '4ms' in label else 'Stubbs failed'
         txt(0.5, y, status, fs=8.5, ha='center', color='#999', style='italic')
 
-    plt.savefig(os.path.join(PLOTS, f'info_{label}.png'),
+    # Save into per-waveform subdir
+    subdir = os.path.join(PLOTS, label)
+    os.makedirs(subdir, exist_ok=True)
+    plt.savefig(os.path.join(subdir, f'info_{label}.png'),
                 dpi=150, bbox_inches='tight', facecolor='#f8f8f8')
     plt.close()
 
@@ -189,7 +191,15 @@ for label in sorted(TABLE):
     make_info_panel(label, sigma_ac, degc_ac, fwhm,
                     delta_peak_ac, snr_lin, snr_db, snr_cr_lin,
                     sigma_stubbs, sigma_tl, sigma_tr, delta_peak_st)
-    print(f'  {label}  SNR={snr_db:.1f}dB  σ_AC={sigma_ac:.3f}  '
-          f'σ_St={sigma_stubbs:.3f}μs' if sigma_stubbs else f'  {label}')
+
+    # Copy recording plot into subdir alongside info panel
+    import shutil
+    src = os.path.join(PLOTS, f'{label}.png')
+    dst = os.path.join(PLOTS, label, f'{label}.png')
+    if os.path.exists(src) and not os.path.exists(dst):
+        shutil.copy2(src, dst)
+
+    st_str = f'{sigma_stubbs:.3f}μs' if sigma_stubbs else 'N/A'
+    print(f'  {label}  σ_AC={sigma_ac:.3f}  σ_St={st_str}')
 
 print(f"\nSaved info_*.png to {PLOTS}/")
