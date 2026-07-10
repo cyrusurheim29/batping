@@ -58,19 +58,19 @@ CHIRP_CONFIGS = [
     # 30s recordings → ~1800 periods at ~60Hz: 100 for Stubbs template + 1700 eval.
 
     # ── Best performers — Stubbs analysis configs ─────────────────────────────
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp',      'piezo_compensated',       'tukey', 6.74),
-    (28975, 53975, 2.0, 'bw_25kHz_wide_2ms_comp',       'piezo_compensated',       'tukey', 6.22),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_rect',  'piezo_compensated',       'rect',  5.10),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp',       'piezo_compensated',       'tukey', 5.32),
-    (38475, 44475, 2.0, 'bw_6kHz_sym_2ms_flat',         'flat',                    'tukey', 2.15, 23.0),
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp',      'piezo_compensated',       'tukey', 8.64),
+    (28975, 53975, 2.0, 'bw_25kHz_wide_2ms_comp',       'piezo_compensated',       'tukey', 8.14),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_rect',  'piezo_compensated',       'rect',  5.66),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp',       'piezo_compensated',       'tukey', 6.60),
+    (38475, 44475, 2.0, 'bw_6kHz_sym_2ms_flat',         'flat',                    'tukey', 2.33, 23.0),
 
     # ── Reduced-compensation variants (20% floor = 14dB max boost) ───────────
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp_light', 'piezo_compensated_light', 'tukey', 5.08),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_light', 'piezo_compensated_light', 'tukey', 4.74),
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp_light', 'piezo_compensated_light', 'tukey', 6.04),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_light', 'piezo_compensated_light', 'tukey', 5.59),
 
     # ── Diffraction-compensated variants ──────────────────────────────────────
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_diff', 'piezo_compensated_diffraction', 'tukey', 5.35),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_diff', 'piezo_compensated_diffraction', 'tukey', 4.85),
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_diff', 'piezo_compensated_diffraction', 'tukey', 5.97),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_diff', 'piezo_compensated_diffraction', 'tukey', 6.09),
 ]
 
 # TOF search window for 2 m round trip (~5800 μs)

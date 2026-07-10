@@ -14,7 +14,7 @@ from scipy.io import wavfile
 sys.path.insert(0, os.path.dirname(__file__))
 import chirp_sweep as cs
 
-RECORD_S    = 10.0
+RECORD_S    = 30.0   # extended to 30s for proper Stubbs analysis (was 10s)
 ALPHAS      = [0.2, 0.3, 0.4, 0.5, 0.6, 0.8]
 BANDWIDTHS  = [
     ('sm',  6_000,  39_000, 45_000),   # small:  6 kHz,  39–45 kHz
@@ -22,6 +22,29 @@ BANDWIDTHS  = [
     ('lg', 20_000,  32_000, 52_000),   # large:  20 kHz, 32–52 kHz
 ]
 DURATIONS   = [2.0, 4.0]              # ms
+
+# Per-waveform Vpp calibrated to 90% UltraMic FS.
+# Measured July 9 from existing 2V recordings; new = 2.0 × (0.90 / observed_max).
+VOLTAGE_MAP = {
+    'a0.2_sm_2ms': 2.27, 'a0.2_sm_4ms': 2.38,
+    'a0.2_md_2ms': 3.17, 'a0.2_md_4ms': 2.92,
+    'a0.2_lg_2ms': 3.42, 'a0.2_lg_4ms': 3.25,
+    'a0.3_sm_2ms': 2.64, 'a0.3_sm_4ms': 2.60,
+    'a0.3_md_2ms': 3.57, 'a0.3_md_4ms': 3.93,
+    'a0.3_lg_2ms': 4.07, 'a0.3_lg_4ms': 3.82,
+    'a0.4_sm_2ms': 2.58, 'a0.4_sm_4ms': 2.80,
+    'a0.4_md_2ms': 4.38, 'a0.4_md_4ms': 4.27,
+    'a0.4_lg_2ms': 5.15, 'a0.4_lg_4ms': 5.18,
+    'a0.5_sm_2ms': 2.95, 'a0.5_sm_4ms': 2.59,
+    'a0.5_md_2ms': 4.59, 'a0.5_md_4ms': 4.24,
+    'a0.5_lg_2ms': 6.19, 'a0.5_lg_4ms': 4.67,
+    'a0.6_sm_2ms': 3.09, 'a0.6_sm_4ms': 2.96,
+    'a0.6_md_2ms': 4.29, 'a0.6_md_4ms': 4.25,
+    'a0.6_lg_2ms': 6.27, 'a0.6_lg_4ms': 5.14,
+    'a0.8_sm_2ms': 3.36, 'a0.8_sm_4ms': 3.26,
+    'a0.8_md_2ms': 5.12, 'a0.8_md_4ms': 4.34,
+    'a0.8_lg_2ms': 5.72, 'a0.8_lg_4ms': 5.35,
+}
 
 SDG_SR, SDG_MAX = 400000, 16384
 
@@ -65,11 +88,12 @@ def main():
             for bw_tag, bw_hz, f_lo, f_hi in BANDWIDTHS:
                 for alpha in ALPHAS:
                     chirp_n += 1
-                    label = f'a{alpha:.1f}_{bw_tag}_{dur_ms:.0f}ms'
-                    rr    = rep_rate(dur_ms)
+                    label    = f'a{alpha:.1f}_{bw_tag}_{dur_ms:.0f}ms'
+                    rr       = rep_rate(dur_ms)
+                    ampl_vpp = VOLTAGE_MAP.get(label, 2.0)
                     print(f"\n[{chirp_n:02d}/{n_chirps}] {label}  "
                           f"({f_lo/1000:.0f}–{f_hi/1000:.0f}kHz  "
-                          f"BW={bw_hz/1000:.0f}kHz  α={alpha})")
+                          f"BW={bw_hz/1000:.0f}kHz  α={alpha}  {ampl_vpp:.2f}Vpp)")
 
                     # Generate chirp
                     _, chirp, _ = cs.generate_lfm_chirp(
@@ -80,7 +104,7 @@ def main():
 
                     sdg_buf, _ = cs.create_sdg_buffer(chirp, dur_ms)
                     wf_name = ('a' + label.replace('.', 'p').replace('-', 'm'))[:15]
-                    sdg.upload_waveform(wf_name, sdg_buf, rr, ampl_vpp=2.0)
+                    sdg.upload_waveform(wf_name, sdg_buf, rr, ampl_vpp=ampl_vpp)
                     sdg.output_on()
                     time.sleep(0.3)
                     received = cs.record_audio(pa, mic_index, RECORD_S)
