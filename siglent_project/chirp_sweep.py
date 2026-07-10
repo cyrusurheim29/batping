@@ -58,19 +58,19 @@ CHIRP_CONFIGS = [
     # 30s recordings → ~1800 periods at ~60Hz: 100 for Stubbs template + 1700 eval.
 
     # ── Best performers — Stubbs analysis configs ─────────────────────────────
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp',      'piezo_compensated',       'tukey', 4.71),
-    (28975, 53975, 2.0, 'bw_25kHz_wide_2ms_comp',       'piezo_compensated',       'tukey', 4.75),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_rect',  'piezo_compensated',       'rect',  4.33),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp',       'piezo_compensated',       'tukey', 3.70),
-    (38475, 44475, 2.0, 'bw_6kHz_sym_2ms_flat',         'flat',                    'tukey', 1.86),
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp',      'piezo_compensated',       'tukey', 6.74),
+    (28975, 53975, 2.0, 'bw_25kHz_wide_2ms_comp',       'piezo_compensated',       'tukey', 6.22),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_rect',  'piezo_compensated',       'rect',  5.10),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp',       'piezo_compensated',       'tukey', 5.32),
+    (38475, 44475, 2.0, 'bw_6kHz_sym_2ms_flat',         'flat',                    'tukey', 2.15, 23.0),
 
     # ── Reduced-compensation variants (20% floor = 14dB max boost) ───────────
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp_light', 'piezo_compensated_light', 'tukey', 4.19),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_light', 'piezo_compensated_light', 'tukey', 4.02),
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp_light', 'piezo_compensated_light', 'tukey', 5.08),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_light', 'piezo_compensated_light', 'tukey', 4.74),
 
     # ── Diffraction-compensated variants ──────────────────────────────────────
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_diff', 'piezo_compensated_diffraction', 'tukey', 4.43),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_diff', 'piezo_compensated_diffraction', 'tukey', 3.79),
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_diff', 'piezo_compensated_diffraction', 'tukey', 5.35),
+    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_diff', 'piezo_compensated_diffraction', 'tukey', 4.85),
 ]
 
 # TOF search window for 2 m round trip (~5800 μs)
@@ -212,14 +212,15 @@ def generate_lfm_chirp(f_start, f_stop, duration_ms, sample_rate,
     return t, chirp, f_inst
 
 
-def create_sdg_buffer(chirp_at_dodo_rate, duration_ms):
+def create_sdg_buffer(chirp_at_dodo_rate, duration_ms, dead_ms=15.0):
     """
     Resample chirp to SDG rate and zero-pad to rep period.
 
-    Dead time = 15 ms after chirp end, which is > TOF (~5.8 ms) + chirp
-    duration, so the echo always clears before the next cycle starts.
+    dead_ms: silence after chirp end. Default 15ms. Increase for waveforms
+    whose burst+reflection pair lands near the period boundary (e.g. flat 6kHz
+    at new mic geometry: use dead_ms=23 to get 25ms period at 40Hz).
     """
-    TOF_MARGIN_MS  = 15.0
+    TOF_MARGIN_MS  = dead_ms
     period_ms      = duration_ms + TOF_MARGIN_MS
     buf_samples    = min(int(period_ms / 1000 * SDG_SAMPLE_RATE), SDG_MAX_SAMPLES)
     actual_rep_rate = SDG_SAMPLE_RATE / buf_samples
@@ -765,6 +766,7 @@ def main():
             f_start, f_stop, dur_ms, label, amp_shape = cfg[:5]
             win      = cfg[5] if len(cfg) > 5 else 'tukey'
             ampl_vpp = cfg[6] if len(cfg) > 6 else 2.0
+            dead_ms  = cfg[7] if len(cfg) > 7 else 15.0
 
             if amp_shape == 'piezo_compensated' and piezo_response is None:
                 print(f'\nSkipping {label} (no piezo response data)')
@@ -784,7 +786,7 @@ def main():
                 amp_shape, piezo_response, window=win)
 
             # Build SDG buffer (resampled, zero-padded)
-            sdg_buf, rep_rate = create_sdg_buffer(chirp, dur_ms)
+            sdg_buf, rep_rate = create_sdg_buffer(chirp, dur_ms, dead_ms=dead_ms)
             dead_ms = len(sdg_buf) / SDG_SAMPLE_RATE * 1000 - dur_ms
             print(f"  SDG: {len(sdg_buf)} samples @ {rep_rate:.1f} Hz  "
                   f"({dur_ms} ms chirp + {dead_ms:.1f} ms dead time)")

@@ -191,36 +191,73 @@ def detect_windows(period_data, fs, win_half_width_ms=WIN_HALF_WIDTH_MS,
     tof_ms = tof_us / 1000.0
     tol_ms = 2.0   # ±2ms tolerance around expected TOF
 
-    # Step 1: incident = first significant peak in [0, 0.6*tof_ms].
-    # Gate is 60% of expected TOF so the reflected burst (arriving at ~TOF)
-    # cannot bleed into the search window even for long chirps.
-    # Use first-onset detection rather than argmax so a faint incident is
-    # preferred over a strong reflected that falls near the gate edge.
-    inc_gate_hi  = min(period_ms, 0.6 * tof_ms)
-    inc_hi_idx   = max(1, int(inc_gate_hi / 1000 * fs))
-    # Find first sample above 5% of global max → marks incident onset
-    threshold    = 0.05
-    above        = env_n[:inc_hi_idx] > threshold
-    if np.any(above):
-        onset = int(np.argmax(above))
-        # Local max within 5ms of onset
-        search_end = min(inc_hi_idx, onset + int(0.005 * fs))
-        inc_sample = onset + int(np.argmax(env_n[onset:search_end]))
-    else:
-        inc_sample = int(np.argmax(env_n[:inc_hi_idx]))
-    inc_center_ms = float(t_ms[min(inc_sample, len(t_ms) - 1)])
+    # Robust two-peak detection — works regardless of which peak is stronger.
+    #
+    # Strategy: find the two best peaks anywhere in the period whose separation
+    # is close to tof_ms (within ±tol_ms).  The earlier peak = incident,
+    # the later peak = reflected.  This handles:
+    #   • New mic positions where incident ≈ reflected amplitude
+    #   • Cases where T0 places the incident late in the period frame
+    #   • Room echoes (which don't pair with anything at TOF separation)
+    #
+    # Implementation:
+    #   1. Find global maximum → candidate_A
+    #   2. Search for candidate_B at candidate_A ± tof_ms (±tol_ms window)
+    #      Pick the strongest candidate_B in either direction.
+    #   3. If no good candidate_B found, fall back to the first-onset + TOF approach.
 
-    # Step 2: reflected = highest peak in [inc + tof - tol, inc + tof + tol]
-    ref_expected_ms = inc_center_ms + tof_ms
-    ref_lo = max(0.0, ref_expected_ms - tol_ms)
-    ref_hi = min(period_ms, ref_expected_ms + tol_ms)
-    lo_idx = int(ref_lo / 1000 * fs)
-    hi_idx = max(lo_idx + 1, int(ref_hi / 1000 * fs))
-    hi_idx = min(hi_idx, len(env_n))
-    if hi_idx > lo_idx and np.any(env_n[lo_idx:hi_idx] > 0):
-        ref_sample = lo_idx + int(np.argmax(env_n[lo_idx:hi_idx]))
+    # Step 1: global max as anchor — restricted to interior of period so
+    # bursts cut off at the edges ([0,2ms] and [period-2ms, period]) are ignored.
+    edge_ms  = 2.0
+    lo_edge  = int(edge_ms / 1000 * fs)
+    hi_edge  = max(lo_edge + 1, len(env_n) - int(edge_ms / 1000 * fs))
+    interior = env_n[lo_edge:hi_edge]
+    anchor_sample = lo_edge + int(np.argmax(interior))
+    anchor_ms     = float(t_ms[anchor_sample])
+
+    # Step 2: search for pairing peak at anchor ± tof_ms
+    def _search_peak(center_ms):
+        lo = max(0.0, center_ms - tol_ms)
+        hi = min(period_ms, center_ms + tol_ms)
+        if lo >= hi or lo >= period_ms or hi <= 0:
+            return None, 0.0
+        li = int(lo / 1000 * fs)
+        hi_i = min(int(hi / 1000 * fs), len(env_n))
+        hi_i = max(li + 1, hi_i)
+        if li >= len(env_n):
+            return None, 0.0
+        hi_i = min(hi_i, len(env_n))
+        if hi_i <= li:
+            return None, 0.0
+        idx = li + int(np.argmax(env_n[li:hi_i]))
+        return idx, float(env_n[idx])
+
+    # Candidate: reflected is AFTER anchor
+    cand_ref_idx, cand_ref_val = _search_peak(anchor_ms + tof_ms)
+    # Candidate: incident is BEFORE anchor (anchor is the reflected)
+    cand_inc_idx, cand_inc_val = _search_peak(anchor_ms - tof_ms)
+
+    if cand_ref_val >= cand_inc_val and cand_ref_idx is not None:
+        # anchor = incident, cand_ref = reflected
+        inc_sample = anchor_sample
+        ref_sample = cand_ref_idx
+    elif cand_inc_idx is not None and cand_inc_val > 0:
+        # anchor = reflected, cand_inc = incident
+        inc_sample = cand_inc_idx
+        ref_sample = anchor_sample
     else:
-        ref_sample = int(inc_sample + tof_ms / 1000 * fs)
+        # Fallback: first-onset search + TOF
+        threshold = 0.05
+        gate_hi   = max(1, int(min(period_ms, 0.6 * tof_ms) / 1000 * fs))
+        above     = env_n[:gate_hi] > threshold
+        if np.any(above):
+            onset = int(np.argmax(above))
+            inc_sample = onset + int(np.argmax(env_n[onset:min(gate_hi, onset+int(0.005*fs))]))
+        else:
+            inc_sample = 0
+        ref_sample = min(len(env_n)-1, inc_sample + int(tof_ms / 1000 * fs))
+
+    inc_center_ms = float(t_ms[min(inc_sample, len(t_ms) - 1)])
     ref_center_ms = float(t_ms[min(ref_sample, len(t_ms) - 1)])
 
     hw = win_half_width_ms
@@ -269,6 +306,75 @@ def slice_periods(data, fs, rep_rate, amp_cutoff=0.25):
     return slices
 
 
+def adaptive_slice_periods(data, fs, rep_rate, tof_us=5700.0,
+                           pre_inc_ms=2.0, amp_threshold=0.15):
+    """
+    Adaptive period slicer: finds actual incident peaks in the continuous
+    recording rather than using fixed uniform cuts.
+
+    Each 17ms window is anchored to the detected incident peak, so the
+    incident is always at ~pre_inc_ms into the window and the reflected at
+    ~pre_inc_ms + TOF — regardless of SDG/UltraMic clock drift.  This
+    eliminates the period-boundary drift problem entirely.
+
+    Strategy:
+      1. Find all large envelope peaks separated by approximately one SDG
+         period (= 1/rep_rate).  Both incident and reflected peaks qualify.
+      2. Pair consecutive peaks that are ~TOF apart → identify each pair.
+      3. Centre a window of length period_samples on each incident peak.
+
+    Returns list of (start_idx, end_idx) tuples, same interface as slice_periods.
+    """
+    from scipy.signal import find_peaks
+
+    period_samples = round(fs / rep_rate)
+    window_samples = period_samples          # output window length = 1 period
+    tof_samples    = int(tof_us / 1e6 * fs)
+    pre_samples    = int(pre_inc_ms / 1000 * fs)
+    tol_samples    = int(0.002 * fs)         # ±2ms tolerance on TOF matching
+
+    env   = np.abs(hilbert(data))
+    env_n = env / np.max(env)
+
+    # Find all significant peaks with minimum spacing of half a period
+    min_dist = max(1, period_samples // 3)
+    peaks, props = find_peaks(env_n, height=amp_threshold, distance=min_dist)
+
+    # Pair peaks into (incident, reflected) by TOF separation
+    incident_samples = []
+    used = set()
+    for i, p in enumerate(peaks):
+        if i in used:
+            continue
+        # Look for a partner ~TOF after this peak
+        for j in range(i + 1, len(peaks)):
+            sep = peaks[j] - p
+            if sep > tof_samples + tol_samples:
+                break
+            if abs(sep - tof_samples) <= tol_samples:
+                # Found a pair: p=incident, peaks[j]=reflected
+                incident_samples.append(p)
+                used.add(i); used.add(j)
+                break
+
+    if not incident_samples:
+        print("  adaptive_slice_periods: no incident-reflected pairs found, "
+              "falling back to slice_periods")
+        return slice_periods(data, fs, rep_rate)
+
+    # Build windows anchored pre_inc_ms before each incident peak
+    slices = []
+    for inc in incident_samples:
+        start = inc - pre_samples
+        end   = start + window_samples
+        if start >= 0 and end <= len(data):
+            slices.append((start, end))
+
+    print(f"  adaptive_slice_periods: {len(slices)} windows from "
+          f"{len(incident_samples)} detected incident peaks")
+    return slices
+
+
 def extract_window(period_data, fs, win_ms):
     """Extract a sub-window from a period. win_ms = (start_ms, end_ms) from period start."""
     s = int(win_ms[0] / 1000 * fs)
@@ -314,7 +420,7 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
     sig = hp_filter(data, fs)
 
     # Slice into periods
-    slices = slice_periods(sig, fs, rep_rate)
+    slices = adaptive_slice_periods(sig, fs, rep_rate)
     n_periods = len(slices)
     print(f"  Periods found: {n_periods}")
 
