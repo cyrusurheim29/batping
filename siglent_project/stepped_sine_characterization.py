@@ -47,6 +47,16 @@ FREQ_END = 65000     # Hz
 FREQ_STEP = 50       # Hz  (~900 frequencies, ~13 min total)
 AMPLITUDE = 0.9
 
+# ── Burst mode (advisor recommendation) ──────────────────────────────────────
+# Instead of 300ms continuous sine per frequency, send a short burst and measure
+# the received peak amplitude. Much faster (~75×) and avoids heating.
+# Piezo ring-up time ≈ Q/(π·f₀) ≈ 23/(π·40e3) ≈ 180 μs, so measure amplitude
+# in the SECOND HALF of the burst once the piezo has settled.
+BURST_MODE = True           # True = short burst; False = original 300ms continuous
+BURST_DURATION_MS = 4.0     # ms per frequency (4ms → ~160 cycles at 40kHz)
+BURST_AMPL_VPP = 6.0        # Vpp — can drive harder since duty cycle is low
+BURST_SETTLE_FRAC = 0.5     # ignore first SETTLE_FRAC of burst (ring-up), measure rest
+
 OUTPUT_DIR = '/Users/cyrusurheim_1/Downloads/Stubbs_Stuff/Claude_Dir/siglent_project/'
 
 
@@ -493,11 +503,31 @@ def main():
     print("=" * 60)
     print("Stepped-Sine Piezo Bandwidth Characterization")
     print("=" * 60)
+
+    if BURST_MODE:
+        burst_s = BURST_DURATION_MS / 1000.0
+        # SDG buffer: burst + equal dead time for mic to settle between freqs
+        # Use a repeating burst at a low rep rate so we capture one clean burst
+        dead_ms = max(BURST_DURATION_MS * 2, 10.0)  # at least 10ms dead time
+        period_ms = BURST_DURATION_MS + dead_ms
+        buf_n = min(int(period_ms / 1000 * SDG_SAMPLE_RATE), 16384)
+        rep_rate = SDG_SAMPLE_RATE / buf_n
+        record_dur = period_ms / 1000 * 2  # record 2 periods to catch burst reliably
+        settle_samples = int(BURST_SETTLE_FRAC * burst_s * DODOMIC_SAMPLE_RATE)
+        burst_samples = int(burst_s * DODOMIC_SAMPLE_RATE)
+        print(f"\nMode: BURST  ({BURST_DURATION_MS:.0f}ms burst + {dead_ms:.0f}ms dead)")
+        print(f"  Rep rate: {rep_rate:.1f} Hz  |  Record: {record_dur*1000:.0f}ms/freq")
+        print(f"  Amplitude: {BURST_AMPL_VPP:.1f} Vpp  |  Settle fraction: {BURST_SETTLE_FRAC:.0%}")
+        est_time = len(np.arange(FREQ_START, FREQ_END + FREQ_STEP, FREQ_STEP)) * (record_dur + 0.3) / 60
+    else:
+        print(f"\nMode: CONTINUOUS ({RECORD_DURATION*1000:.0f}ms per frequency)")
+        est_time = len(np.arange(FREQ_START, FREQ_END + FREQ_STEP, FREQ_STEP)) * (RECORD_DURATION + 1.0) / 60
+
     print(f"\nFrequency range: {FREQ_START/1000:.0f} - {FREQ_END/1000:.0f} kHz")
     print(f"Step size: {FREQ_STEP} Hz")
     freq_list = np.arange(FREQ_START, FREQ_END + FREQ_STEP, FREQ_STEP)
     print(f"Total measurements: {len(freq_list)}")
-    print(f"Estimated time: {len(freq_list) * (RECORD_DURATION + 1.0) / 60:.1f} minutes")
+    print(f"Estimated time: {est_time:.1f} minutes")
 
     # Initialize storage
     transfer_magnitudes = []
@@ -538,51 +568,84 @@ def main():
                 else:
                     print(f"\n[{i}/{len(freq_list)}] {freq/1000:.1f} kHz")
 
-            # Generate sine at this frequency
-            t_wf, wf = generate_sine_waveform(freq, RECORD_DURATION, DODOMIC_SAMPLE_RATE, AMPLITUDE)
+            if BURST_MODE:
+                # ── Burst mode ────────────────────────────────────────────────
+                # Build SDG buffer: sine burst + dead time, repeated at rep_rate.
+                # Embed integer number of cycles so the burst is phase-coherent.
+                n_cycles = max(1, int(freq * burst_s))  # cycles in burst
+                actual_burst_s = n_cycles / freq         # exact integer-cycle duration
+                n_burst_sdg = int(actual_burst_s * SDG_SAMPLE_RATE)
+                t_burst = np.arange(n_burst_sdg) / SDG_SAMPLE_RATE
+                burst_sdg = (AMPLITUDE * np.sin(2 * np.pi * freq * t_burst)
+                             * signal.windows.tukey(n_burst_sdg, alpha=0.1))
+                # Embed in SDG buffer with dead time
+                sdg_buf = np.zeros(buf_n)
+                sdg_buf[:min(n_burst_sdg, buf_n)] = burst_sdg[:min(n_burst_sdg, buf_n)]
 
-            # Create SDG waveform buffer
-            sdg_waveform = create_sdg_waveform(wf, SDG_SAMPLE_RATE, DODOMIC_SAMPLE_RATE,
-                                               RECORD_DURATION, freq)
+                sdg.upload_waveform(f"bs{int(freq)}", sdg_buf, rep_rate,
+                                    ampl_vpp=BURST_AMPL_VPP)
+                sdg.output_on(channel=1)
+                received = record_audio(pa, mic_index, record_dur)
+                sdg.output_off(channel=1)
 
-            # Upload and play
-            sdg.upload_waveform(f"ss{int(freq)}", sdg_waveform, freq, ampl_vpp=2.0)
-            sdg.output_on(channel=1)
-            time.sleep(0.2)  # Let piezo settle
+                # Find the burst in the recording (peak of Hilbert envelope)
+                from scipy.signal import hilbert as _hilbert
+                env = np.abs(_hilbert(received))
+                peak_idx = np.argmax(env)
+                # Extract the settled portion: skip first SETTLE_FRAC of burst
+                win_start = max(0, peak_idx - burst_samples + settle_samples)
+                win_end   = max(win_start + 1, peak_idx + burst_samples // 4)
+                win_end   = min(win_end, len(received))
+                seg = received[win_start:win_end]
 
-            # Record
-            received = record_audio(pa, mic_index, RECORD_DURATION)
+                # Amplitude = RMS of settled burst window (peak-normalise to tx)
+                tx_rms = np.sqrt(0.5) * AMPLITUDE  # RMS of sine
+                rx_rms = np.sqrt(np.mean(seg**2)) if len(seg) > 0 else 1e-10
+                mag_db = 20 * np.log10(rx_rms / (tx_rms + 1e-10) + 1e-10)
 
-            # Turn off between measurements
-            sdg.output_off(channel=1)
+                # Phase via FFT of settled segment
+                n_seg = len(seg)
+                if n_seg > 0:
+                    fft_seg = np.fft.fft(seg)
+                    freqs_seg = np.fft.fftfreq(n_seg, 1/DODOMIC_SAMPLE_RATE)
+                    idx_seg = np.argmin(np.abs(freqs_seg - freq))
+                    phase_rad = np.angle(fft_seg[idx_seg])
+                else:
+                    phase_rad = 0.0
 
-            # Extract magnitude at this frequency via FFT
-            n_fft = len(received)
-            fft_rx = np.fft.fft(received)
+                if 40000 <= freq <= 41000 and received_example is None:
+                    received_example = received.copy()
 
-            # Use the actual generated waveform as reference (matches chirp approach)
-            # Pad or trim wf to match received length
-            wf_matched = np.zeros(n_fft)
-            wf_len = min(len(wf), n_fft)
-            wf_matched[:wf_len] = wf[:wf_len]
-            fft_tx = np.fft.fft(wf_matched)
+            else:
+                # ── Original continuous-sine mode ─────────────────────────────
+                t_wf, wf = generate_sine_waveform(freq, RECORD_DURATION,
+                                                  DODOMIC_SAMPLE_RATE, AMPLITUDE)
+                sdg_waveform = create_sdg_waveform(wf, SDG_SAMPLE_RATE,
+                                                   DODOMIC_SAMPLE_RATE,
+                                                   RECORD_DURATION, freq)
+                sdg.upload_waveform(f"ss{int(freq)}", sdg_waveform, freq, ampl_vpp=2.0)
+                sdg.output_on(channel=1)
+                time.sleep(0.2)
+                received = record_audio(pa, mic_index, RECORD_DURATION)
+                sdg.output_off(channel=1)
 
-            freqs_fft = np.fft.fftfreq(n_fft, 1/DODOMIC_SAMPLE_RATE)
+                n_fft = len(received)
+                fft_rx = np.fft.fft(received)
+                wf_matched = np.zeros(n_fft)
+                wf_len = min(len(wf), n_fft)
+                wf_matched[:wf_len] = wf[:wf_len]
+                fft_tx = np.fft.fft(wf_matched)
+                freqs_fft = np.fft.fftfreq(n_fft, 1/DODOMIC_SAMPLE_RATE)
+                idx = np.argmin(np.abs(freqs_fft - freq))
+                H = fft_rx[idx] / (fft_tx[idx] + 1e-10)
+                mag_db = 20 * np.log10(np.abs(H) + 1e-10)
+                phase_rad = np.angle(H)
 
-            # Find bin closest to our frequency
-            idx = np.argmin(np.abs(freqs_fft - freq))
-
-            # Transfer function at this frequency
-            H = fft_rx[idx] / (fft_tx[idx] + 1e-10)
-            mag_db = 20 * np.log10(np.abs(H) + 1e-10)
-            phase_rad = np.angle(H)
+                if 40000 <= freq <= 41000 and received_example is None:
+                    received_example = received.copy()
 
             transfer_magnitudes.append(mag_db)
             transfer_phases.append(phase_rad)
-
-            # Save example recording near resonance for time-domain plot
-            if 40000 <= freq <= 41000 and received_example is None:
-                received_example = received.copy()
 
             # Compact progress
             print(f"  {freq/1000:.1f} kHz: {mag_db:.1f} dB", end="\r")
