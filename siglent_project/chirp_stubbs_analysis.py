@@ -629,17 +629,23 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
     ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8, loc='upper right')
     ax.grid(True, alpha=0.3)
 
-    # Panel 2: Example cross-correlations
+    # Panel 2: Example cross-correlations (raw with carrier + envelope overlay)
     ax = axes[1]
     zoom = 500  # μs either side of peak
     m_l = (lags_l >= τl_ex - zoom) & (lags_l <= τl_ex + zoom)
     m_r = (lags_r >= τr_ex - zoom) & (lags_r <= τr_ex + zoom)
-    ax.plot(lags_l[m_l], env_l_ex[m_l], 'b-', lw=1.5, label=f'xcorr launch  τ={τl_ex:.2f}μs')
-    ax.plot(lags_r[m_r], env_r_ex[m_r], 'r-', lw=1.5, label=f'xcorr return  τ={τr_ex:.2f}μs')
+    xc_l_norm = xc_l_ex / (np.max(np.abs(xc_l_ex)) + 1e-12)
+    xc_r_norm = xc_r_ex / (np.max(np.abs(xc_r_ex)) + 1e-12)
+    # raw xcorr (thin, shows carrier oscillations)
+    ax.plot(lags_l[m_l], xc_l_norm[m_l], 'b-', lw=0.6, alpha=0.45, label=f'xcorr launch  τ={τl_ex:.2f}μs')
+    ax.plot(lags_r[m_r], xc_r_norm[m_r], 'r-', lw=0.6, alpha=0.45, label=f'xcorr return  τ={τr_ex:.2f}μs')
+    # envelope overlay (bold, top only)
+    ax.plot(lags_l[m_l], env_l_ex[m_l], 'b-', lw=2.0, alpha=0.9)
+    ax.plot(lags_r[m_r], env_r_ex[m_r], 'r-', lw=2.0, alpha=0.9)
     ax.axvline(τl_ex, color='b', ls='--', alpha=0.6)
     ax.axvline(τr_ex, color='r', ls='--', alpha=0.6)
     ax.set_xlabel('Lag (μs)')
-    ax.set_ylabel('Normalised xcorr envelope')
+    ax.set_ylabel('Normalised xcorr')
     ax.set_title(f'Example Cross-Correlations (period {n_periods-1})')
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
