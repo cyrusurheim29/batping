@@ -336,7 +336,11 @@ def adaptive_slice_periods(data, fs, rep_rate, tof_us=5700.0,
     env   = np.abs(hilbert(data))
     env_n = env / np.max(env)
 
-    # Find all significant peaks with minimum spacing of half a period
+    # Minimum spacing between detected peaks. period_samples//3 works well for
+    # continuous recordings where inc-ref separation >> period/3. For waveforms
+    # where the separation approaches period/3 (e.g. 4ms chirps at 52Hz where
+    # period/3≈6.3ms > TOF≈5.7ms), this will merge inc and ref — those need
+    # re-recording at lower rep rate or the caller should pass amp_threshold=0.
     min_dist = max(1, period_samples // 3)
     peaks, props = find_peaks(env_n, height=amp_threshold, distance=min_dist)
 
@@ -668,6 +672,9 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
         temp_precision_C=temp_precision, n_template=n_template, n_eval=n_eval,
         fs=fs, incident_win_ms=incident_win_ms, reflection_win_ms=reflection_win_ms,
         mean_fit_sigma_us=mean_fit_sigma,
+        # Per-period fit uncertainties from xcorr_lag_us (11-pt parabola, DoF=8)
+        sigma_launch=np.array(sigma_launch_list),
+        sigma_return=np.array(sigma_return_list),
     )
 
 
