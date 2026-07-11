@@ -646,13 +646,14 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
 
     # Panel 3: Δτ time series
     ax = axes[2]
-    ax.plot(delta_tau, 'ko-', ms=3, lw=1, label='Δτ per period')
+    t_sec = (np.arange(n_eval) + n_template) / rep_rate
+    ax.plot(t_sec, delta_tau, 'ko-', ms=3, lw=1, label='Δτ per period')
     ax.axhline(mean_dt, color='b', ls='--', lw=1.5,
                label=f'mean = {mean_dt:.3f} μs')
     ax.axhline(mean_dt + std_dt, color='gray', ls=':', lw=1)
     ax.axhline(mean_dt - std_dt, color='gray', ls=':',  lw=1,
                label=f'σ = {std_dt:.3f} μs → {temp_precision:.4f}°C/ping')
-    ax.set_xlabel('Evaluation period index')
+    ax.set_xlabel('Time (s)')
     ax.set_ylabel('Δτ = τ_return − τ_launch (μs)')
     ax.set_title('Differential TOF Time Series')
     ax.legend(fontsize=8)
