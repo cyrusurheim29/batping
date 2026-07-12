@@ -168,6 +168,112 @@ def xcorr_lag_us(signal_seg, template, fs, search_radius_us=200.0):
     return lag_us, xc, env, sigma_us
 
 
+def xcorr_lag_shape_fit(signal_seg, template, fs,
+                        R_auto=None, window_half_us=200.0,
+                        search_radius_us=200.0):
+    """
+    Estimate lag by fitting the measured CCF to the template autocorrelation shape.
+
+    Uses the full oscillating CCF peak — not just its argmax — as a vernier ruler.
+
+    Model (linearised Taylor expansion around the coarse integer peak):
+        R(τ_k) ≈ A · R_auto(τ_k) + B · R_auto'(τ_k)
+    where B/A = −Δτ  (sub-sample correction, in samples).
+
+    Both the carrier oscillations (phase information) and the envelope curvature
+    (amplitude information) over the entire ±window_half_us window constrain the
+    2-parameter fit simultaneously — far more than the 11-pt parabola on the envelope.
+
+    Uncertainty is the LS covariance propagated through the delta method for Δτ = −B/A.
+
+    Parameters
+    ----------
+    signal_seg      : masked evaluation period (same length as template)
+    template        : co-added template (T_launch or T_return)
+    fs              : sample rate (Hz)
+    R_auto          : precomputed correlate(template, template, 'full').
+                      Pass from analyze() to avoid recomputing each period.
+                      Computed internally if None (slow — only for standalone use).
+    window_half_us  : half-width of fit window around coarse peak (μs). Default 200 μs
+                      covers the main lobe for typical 4–6 kHz effective bandwidth.
+    search_radius_us: half-width of coarse-peak search window (μs).
+
+    Returns
+    -------
+    lag_us    : lag estimate (μs)
+    sigma_us  : 1-sigma uncertainty from LS covariance, delta method (μs)
+    A         : fitted peak amplitude (SNR proxy)
+    rms_resid : RMS fit residual normalised by |A| (goodness-of-fit)
+    """
+    xc = correlate(signal_seg, template, mode='full')
+    if R_auto is None:
+        R_auto = correlate(template, template, mode='full')
+
+    center = len(template) - 1          # lag = 0 index (same for xc and R_auto)
+
+    # Coarse peak: argmax of Hilbert envelope in search window
+    env    = np.abs(hilbert(xc))
+    radius = int(search_radius_us * fs / 1e6)
+    lo     = max(0, center - radius)
+    hi     = min(len(xc) - 1, center + radius)
+    coarse = lo + int(np.argmax(env[lo:hi + 1]))
+
+    # Window of integer sample offsets around coarse peak
+    W      = max(int(window_half_us * fs / 1e6), 5)
+    k_all  = np.arange(-W, W + 1, dtype=int)
+
+    # Discard offsets that fall outside either array (leave 1-sample margin for deriv)
+    valid  = (
+        (coarse + k_all >= 0) & (coarse + k_all < len(xc)) &
+        (center + k_all >= 1) & (center + k_all < len(R_auto) - 1)
+    )
+    k = k_all[valid]
+    if len(k) < 5:
+        lag_us_fb, _, _, sigma_us_fb = xcorr_lag_us(signal_seg, template, fs,
+                                                     search_radius_us)
+        return lag_us_fb, sigma_us_fb, 1.0, np.nan
+
+    xc_y = xc[coarse + k].astype(float)
+    ra   = R_auto[center + k].astype(float)
+    # Central-difference derivative of R_auto at each window sample
+    ra_d = (R_auto[center + k + 1] - R_auto[center + k - 1]).astype(float) / 2.0
+
+    # Weight by envelope of R_auto: upweights peak region (high SNR),
+    # downweights sidelobes (low SNR) without penalising carrier zero-crossings
+    env_ra = np.abs(hilbert(ra))
+    w      = env_ra / (np.max(env_ra) + 1e-12)
+
+    Phi   = np.column_stack([ra, ra_d])
+    Phi_w = Phi * w[:, None]
+    y_w   = xc_y * w
+
+    AB, _, _, _ = np.linalg.lstsq(Phi_w, y_w, rcond=None)
+    A, B = float(AB[0]), float(AB[1])
+
+    if abs(A) < 1e-10:
+        return float(coarse - center) / fs * 1e6, 1e6 / fs, 0.0, np.nan
+
+    delta_samp = -B / A                              # fractional sample correction
+    lag_us = (coarse - center + delta_samp) / fs * 1e6
+
+    # Uncertainty via delta method on unweighted LS covariance
+    # (unweighted residuals give the true noise model for the covariance)
+    residuals    = xc_y - Phi @ AB
+    K            = len(xc_y)
+    sigma2_noise = float(np.dot(residuals, residuals)) / max(1, K - 2)
+    try:
+        cov = sigma2_noise * np.linalg.inv(Phi.T @ Phi)
+    except np.linalg.LinAlgError:
+        cov = sigma2_noise * np.linalg.pinv(Phi.T @ Phi)
+
+    sA2 = cov[0, 0];  sB2 = cov[1, 1];  cAB = cov[0, 1]
+    var_delta = (sB2 + delta_samp**2 * sA2 - 2 * delta_samp * cAB) / (A ** 2)
+    sigma_us  = float(np.sqrt(max(0.0, var_delta))) * 1e6 / fs
+
+    rms_resid = float(np.sqrt(sigma2_noise)) / (abs(A) + 1e-12)
+    return lag_us, sigma_us, float(A), rms_resid
+
+
 def detect_windows(period_data, fs, win_half_width_ms=WIN_HALF_WIDTH_MS,
                    tof_us=5700.0):
     """
@@ -336,12 +442,11 @@ def adaptive_slice_periods(data, fs, rep_rate, tof_us=5700.0,
     env   = np.abs(hilbert(data))
     env_n = env / np.max(env)
 
-    # Minimum spacing between detected peaks. period_samples//3 works well for
-    # continuous recordings where inc-ref separation >> period/3. For waveforms
-    # where the separation approaches period/3 (e.g. 4ms chirps at 52Hz where
-    # period/3≈6.3ms > TOF≈5.7ms), this will merge inc and ref — those need
-    # re-recording at lower rep rate or the caller should pass amp_threshold=0.
-    min_dist = max(1, period_samples // 3)
+    # Minimum spacing between detected peaks.
+    # When TOF < period/3 (e.g. 4ms chirp at 52 Hz: period/3=6.3ms, TOF=5.7ms),
+    # period//3 merges incident and reflected into one peak. Cap min_dist at
+    # 80% of expected TOF so both bursts are always resolvable.
+    min_dist = max(1, min(period_samples // 3, int(tof_samples * 0.8)))
     peaks, props = find_peaks(env_n, height=amp_threshold, distance=min_dist)
 
     # Pair peaks into (incident, reflected) by TOF separation
@@ -409,7 +514,8 @@ def mask_period(period_data, fs, win_ms):
 
 def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
             incident_win_ms=INCIDENT_WIN_MS, reflection_win_ms=REFLECTION_WIN_MS,
-            win_half_width_ms=WIN_HALF_WIDTH_MS, output_dir=OUTPUT_DIR):
+            win_half_width_ms=WIN_HALF_WIDTH_MS, output_dir=OUTPUT_DIR,
+            save_plot=True):
     """
     Run Stubbs dual-template analysis on a WAV file.
     Returns dict with templates, per-period lags, and precision metrics.
@@ -563,42 +669,60 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
     print(f"  T_launch peak: {np.max(np.abs(T_launch)):.4f}  "
           f"T_return peak: {np.max(np.abs(T_return)):.4f}")
 
+    # Precompute template autocorrelations for the shape-fit estimator (done once)
+    R_auto_L = correlate(T_launch, T_launch, mode='full')
+    R_auto_R = correlate(T_return, T_return, mode='full')
+
     # Evaluate: drift-correct each evaluation period, mask, xcorr with templates.
     # tau_launch should be near 0 if alignment is good — it is the jitter diagnostic.
     # tau_return - tau_launch = differential TOF = temperature signal.
-    tau_launch_list = []
-    tau_return_list = []
-    sigma_launch_list = []
-    sigma_return_list = []
+    tau_launch_list    = [];  tau_return_list    = []
+    sigma_launch_list  = [];  sigma_return_list  = []
+    tau_launch_sf_list = [];  tau_return_sf_list = []
+    sigma_launch_sf_list=[];  sigma_return_sf_list=[]
     for i in range(n_template, n_periods):
         corrected = apply_correction(sig[slices[i][0]:slices[i][1]], shifts_frac[i])
         inc_m = mask_period(corrected, fs, incident_win_ms)
         ref_m = mask_period(corrected, fs, reflection_win_ms)
-        τl, _, _, σl = xcorr_lag_us(inc_m, T_launch, fs)
+        τl,  _, _, σl  = xcorr_lag_us(inc_m, T_launch, fs)
         τr, xc_r, env_r, σr = xcorr_lag_us(ref_m, T_return, fs)
-        tau_launch_list.append(τl)
-        tau_return_list.append(τr)
-        sigma_launch_list.append(σl)
-        sigma_return_list.append(σr)
+        τl_sf, σl_sf, _, _ = xcorr_lag_shape_fit(inc_m, T_launch, fs, R_auto=R_auto_L)
+        τr_sf, σr_sf, _, _ = xcorr_lag_shape_fit(ref_m, T_return, fs, R_auto=R_auto_R)
+        tau_launch_list.append(τl);     tau_return_list.append(τr)
+        sigma_launch_list.append(σl);   sigma_return_list.append(σr)
+        tau_launch_sf_list.append(τl_sf); tau_return_sf_list.append(τr_sf)
+        sigma_launch_sf_list.append(σl_sf); sigma_return_sf_list.append(σr_sf)
 
     tau_launch = np.array(tau_launch_list)
     tau_return = np.array(tau_return_list)
     delta_tau  = tau_return - tau_launch
 
-    n_eval = len(delta_tau)
-    mean_dt = np.mean(delta_tau)
-    std_dt  = np.std(delta_tau)
+    tau_launch_sf = np.array(tau_launch_sf_list)
+    tau_return_sf = np.array(tau_return_sf_list)
+    delta_tau_sf  = tau_return_sf - tau_launch_sf
+
+    n_eval         = len(delta_tau)
+    mean_dt        = float(np.mean(delta_tau))
+    std_dt         = float(np.std(delta_tau))
     temp_precision = std_dt / TOF_SENS_US_PER_DEG
+    mean_dt_sf     = float(np.mean(delta_tau_sf))
+    std_dt_sf      = float(np.std(delta_tau_sf))
+    temp_prec_sf   = std_dt_sf / TOF_SENS_US_PER_DEG
+
+    # Per-period δ(Δτ) = √(δ_L² + δ_R²) from LS covariance — the true estimator uncertainty
+    sigma_dt_para = np.sqrt(np.array(sigma_launch_list)**2    + np.array(sigma_return_list)**2)
+    sigma_dt_sf   = np.sqrt(np.array(sigma_launch_sf_list)**2 + np.array(sigma_return_sf_list)**2)
 
     print(f"\n  Evaluation periods: {n_eval}")
-    mean_fit_sigma = float(np.mean(sigma_launch_list + sigma_return_list)) if sigma_launch_list else None
     print(f"  τ_launch:  mean={np.mean(tau_launch):.2f} μs  σ={np.std(tau_launch):.3f} μs")
     print(f"  τ_return:  mean={np.mean(tau_return):.2f} μs  σ={np.std(tau_return):.3f} μs")
     print(f"  Δτ = τ_return - τ_launch:")
-    print(f"    mean = {mean_dt:.3f} μs  (non-zero → temp offset from reference)")
-    print(f"    σ    = {std_dt:.3f} μs  →  {temp_precision:.4f} °C per ping")
-    if mean_fit_sigma is not None:
-        print(f"    fit σ_peak = {mean_fit_sigma*1000:.0f} ns  (11-pt parabola residual)")
+    print(f"    [parabola]  mean={mean_dt:.3f} μs  between-period σ={std_dt:.4f} μs")
+    print(f"    [shape-fit] mean={mean_dt_sf:.3f} μs  between-period σ={std_dt_sf:.4f} μs")
+    print(f"\n  Per-period δ(Δτ) = √(δ_L² + δ_R²)  [from LS covariance — estimator uncertainty]:")
+    print(f"    parabola:  median={np.median(sigma_dt_para)*1e3:.1f} ns  mean={np.mean(sigma_dt_para)*1e3:.1f} ns")
+    print(f"    shape-fit: median={np.median(sigma_dt_sf)*1e3:.1f} ns  mean={np.mean(sigma_dt_sf)*1e3:.1f} ns")
+    print(f"    improvement: {np.median(sigma_dt_para)/np.median(sigma_dt_sf):.2f}×  (median parabola / median shape-fit)")
 
     # ── Plot ──────────────────────────────────────────────────────────────────
     t_launch_ms = np.arange(len(T_launch)) / fs * 1000
@@ -650,27 +774,31 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # Panel 3: Δτ time series
+    # Panel 3: per-period δ(Δτ) = √(δ_L² + δ_R²) from LS covariance
     ax = axes[2]
-    t_sec = (np.arange(n_eval) + n_template) / rep_rate
-    ax.plot(t_sec, delta_tau, 'ko-', ms=3, lw=1, label='Δτ per period')
-    ax.axhline(mean_dt, color='b', ls='--', lw=1.5,
-               label=f'mean = {mean_dt:.3f} μs')
-    ax.axhline(mean_dt + std_dt, color='gray', ls=':', lw=1)
-    ax.axhline(mean_dt - std_dt, color='gray', ls=':',  lw=1,
-               label=f'σ = {std_dt:.3f} μs → {temp_precision:.4f}°C/ping')
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Δτ = τ_return − τ_launch (μs)')
-    ax.set_title('Differential TOF Time Series')
+    all_vals = np.concatenate([sigma_dt_para, sigma_dt_sf]) * 1e3   # ns
+    p99 = float(np.percentile(all_vals, 99))
+    bins = np.linspace(0, p99, 60)
+    ax.hist(sigma_dt_para * 1e3, bins=bins, color='#888888',   alpha=0.6,
+            label=f'parabola   median={np.median(sigma_dt_para)*1e3:.1f} ns')
+    ax.hist(sigma_dt_sf   * 1e3, bins=bins, color='steelblue', alpha=0.7,
+            label=f'shape-fit  median={np.median(sigma_dt_sf)*1e3:.1f} ns')
+    ax.axvline(np.median(sigma_dt_para)*1e3, color='#555555',   ls='--', lw=1.5)
+    ax.axvline(np.median(sigma_dt_sf)*1e3,   color='steelblue', ls='--', lw=1.5)
+    ax.set_xlabel('δ(Δτ) per period  [ns]  =  √(δ_launch² + δ_return²)')
+    ax.set_ylabel('Count')
+    ax.set_title('Per-period Δτ uncertainty from LS covariance  '
+                 f'(improvement: {np.median(sigma_dt_para)/np.median(sigma_dt_sf):.2f}×)')
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    stem = os.path.splitext(os.path.basename(wav_path))[0]
-    out_path = os.path.join(output_dir, f'stubbs_{stem}.png')
-    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    if save_plot and output_dir:
+        stem = os.path.splitext(os.path.basename(wav_path))[0]
+        out_path = os.path.join(output_dir, f'stubbs_{stem}.png')
+        plt.savefig(out_path, dpi=150, bbox_inches='tight')
+        print(f"\n  Plot saved: {out_path}")
     plt.close()
-    print(f"\n  Plot saved: {out_path}")
 
     return dict(
         T_launch=T_launch, T_return=T_return,
@@ -678,10 +806,24 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
         mean_delta_tau_us=mean_dt, std_delta_tau_us=std_dt,
         temp_precision_C=temp_precision, n_template=n_template, n_eval=n_eval,
         fs=fs, incident_win_ms=incident_win_ms, reflection_win_ms=reflection_win_ms,
-        mean_fit_sigma_us=mean_fit_sigma,
-        # Per-period fit uncertainties from xcorr_lag_us (11-pt parabola, DoF=8)
+        mean_fit_sigma_us=None,
         sigma_launch=np.array(sigma_launch_list),
         sigma_return=np.array(sigma_return_list),
+        # Shape-fit estimator (vernier CCF fit)
+        tau_launch_sf=tau_launch_sf, tau_return_sf=tau_return_sf,
+        delta_tau_sf=delta_tau_sf,
+        mean_delta_tau_sf_us=mean_dt_sf, std_delta_tau_sf_us=std_dt_sf,
+        temp_precision_sf_C=temp_prec_sf,
+        mean_fit_sigma_sf_us=None,
+        sigma_launch_sf=np.array(sigma_launch_sf_list),
+        sigma_return_sf=np.array(sigma_return_sf_list),
+        sigma_dt_para=sigma_dt_para,   # per-period δ(Δτ) = √(δ_L²+δ_R²), parabola
+        sigma_dt_sf=sigma_dt_sf,       # per-period δ(Δτ) = √(δ_L²+δ_R²), shape-fit
+        # Example xcorr (last eval period) for panel-2 plotting in batch scripts
+        ex_xc_l=xc_l_ex, ex_xc_r=xc_r_ex,
+        ex_env_l=env_l_ex, ex_env_r=env_r_ex,
+        ex_lags_l=lags_l, ex_lags_r=lags_r,
+        ex_tau_l=τl_ex, ex_tau_r=τr_ex,
     )
 
 
