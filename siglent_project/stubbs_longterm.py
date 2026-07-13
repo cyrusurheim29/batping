@@ -185,7 +185,9 @@ def main():
                 global_period += 1
                 continue
 
-            # Fine alignment: xcorr with ref0, small window around center_idx
+            # Fine alignment: xcorr with ref0, ±2ms window around center_idx.
+            # Adaptive slicing can place the burst up to ~2ms from center_idx,
+            # so radius_boot (2ms) is needed; ±narrow (0.3ms) misses the peak.
             xc = correlate(period, ref0, mode='full')
             lo = max(0, center_idx - radius_boot)
             hi = min(len(xc), center_idx + radius_boot)
