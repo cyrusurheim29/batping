@@ -147,54 +147,67 @@ def main():
           f"T_return peak: {np.max(np.abs(T_return)):.4f}")
 
     # ── Step 3: evaluate all remaining periods in chunks ──────────────────────
+    # Use adaptive slicing per chunk so accumulated EMA drift never goes out of
+    # bounds.  After adaptive extraction the burst sits near center_idx, so
+    # alignment only needs a small ±narrow search — no cumulative prediction.
     print(f"\nEvaluating {total_periods - N_TMPL:,} periods in chunks of {args.chunk}...")
     tau_l_all = []; tau_r_all = []; eval_idx = []
 
-    # Process in chunks of raw samples to avoid loading everything
     CHUNK_P = args.chunk
     start_period = N_TMPL
     eval_count = 0
+    global_period = N_TMPL   # monotonically increasing period counter
 
     while start_period < total_periods:
         end_period = min(start_period + CHUNK_P, total_periods)
-        # Load just this chunk of raw audio
         s_raw = start_period * period_n
         e_raw = end_period   * period_n
         chunk_raw = raw[s_raw:e_raw]
         chunk_sig = hp(chunk_raw.astype(np.float32) / 32768.0)
 
-        for j in range(end_period - start_period):
-            global_idx = start_period + j   # period index in full recording
-            s_ = j * period_n; e_ = s_ + period_n
-            period = chunk_sig[s_:e_]
+        # Adaptively locate each burst within this chunk — handles any
+        # accumulated clock drift transparently.
+        chunk_slices = st.adaptive_slice_periods(chunk_sig, SR, rep)
+        if not chunk_slices:
+            start_period = end_period
+            global_period += end_period - start_period
+            continue
 
-            # Alignment shift for this period
+        for slice_s, slice_e in chunk_slices:
+            period = chunk_sig[slice_s:slice_e]
+            if len(period) < period_n // 2:
+                global_period += 1
+                continue
+
+            # Fine alignment: xcorr with ref0, small window around center_idx
             xc = correlate(period, ref0, mode='full')
-            pred_c = center_idx + int(round(ema_rate * global_idx))
-            lo = max(0, pred_c-narrow); hi = min(len(xc), pred_c+narrow)
+            lo = max(0, center_idx - radius_boot)
+            hi = min(len(xc), center_idx + radius_boot)
+            if hi <= lo:
+                global_period += 1
+                continue
             env = np.abs(hilbert(xc[lo:hi]))
-            lp = int(np.argmax(env)); hw=5
-            sl,sh=max(0,lp-hw),min(len(env),lp+hw+1)
-            x=np.arange(sl,sh,dtype=float)-lp; y=env[sl:sh]
-            shift=float(lp+lo-center_idx)
-            if len(y)>=5 and np.ptp(y)>1e-12:
-                coeffs=np.polyfit(x,y,2); a,b=coeffs[0],coeffs[1]
-                if abs(a)>1e-10:
-                    dl=float(np.clip(-b/(2*a),-hw,hw))
-                    shift=float(lp+dl+lo-center_idx)
-            # EMA update
-            ema_rate=(1-alpha_ema)*ema_rate+alpha_ema*(shift/global_idx) if global_idx>0 else ema_rate
+            lp = int(np.argmax(env)); hw = 5
+            sl, sh = max(0, lp-hw), min(len(env), lp+hw+1)
+            x = np.arange(sl, sh, dtype=float) - lp; y = env[sl:sh]
+            shift = float(lp + lo - center_idx)
+            if len(y) >= 5 and np.ptp(y) > 1e-12:
+                coeffs = np.polyfit(x, y, 2); a, b = coeffs[0], coeffs[1]
+                if abs(a) > 1e-10:
+                    dl = float(np.clip(-b / (2*a), -hw, hw))
+                    shift = float(lp + dl + lo - center_idx)
 
             corrected = apply_correction(period, shift)
             inc_m = st.mask_period(corrected, SR, iw)
             ref_m = st.mask_period(corrected, SR, rw)
 
-            tl,_,_,_ = st.xcorr_lag_us(inc_m, T_launch, SR)
-            tr,_,_,_ = st.xcorr_lag_us(ref_m, T_return, SR)
+            tl, _, _, _ = st.xcorr_lag_us(inc_m, T_launch, SR)
+            tr, _, _, _ = st.xcorr_lag_us(ref_m, T_return, SR)
             if tl is not None and tr is not None:
                 tau_l_all.append(tl); tau_r_all.append(tr)
-                eval_idx.append(global_idx)
+                eval_idx.append(global_period)
                 eval_count += 1
+            global_period += 1
 
         start_period = end_period
         pct = start_period / total_periods * 100
