@@ -146,12 +146,18 @@ def main():
     print(f"  T_launch peak: {np.max(np.abs(T_launch)):.4f}  "
           f"T_return peak: {np.max(np.abs(T_return)):.4f}")
 
+    # Precompute template autocorrelations for LS shape-fit (avoids recomputing per period)
+    R_auto_L = correlate(T_launch.astype(float), T_launch.astype(float), mode='full')
+    R_auto_R = correlate(T_return.astype(float), T_return.astype(float), mode='full')
+    print(f"  R_auto precomputed (len={len(R_auto_L)})")
+
     # ── Step 3: evaluate all remaining periods in chunks ──────────────────────
-    # Use adaptive slicing per chunk so accumulated EMA drift never goes out of
-    # bounds.  After adaptive extraction the burst sits near center_idx, so
-    # alignment only needs a small ±narrow search — no cumulative prediction.
+    # Uses xcorr_lag_shape_fit (LS shape-fit) — fits the measured CCF to the
+    # template autocorrelation shape using carrier phase, not just envelope max.
+    # Precomputed R_auto_L / R_auto_R avoid recomputing per period.
     print(f"\nEvaluating {total_periods - N_TMPL:,} periods in chunks of {args.chunk}...")
     tau_l_all = []; tau_r_all = []; eval_idx = []
+    sigma_l_all = []; sigma_r_all = []
 
     CHUNK_P = args.chunk
     start_period = N_TMPL
@@ -201,10 +207,11 @@ def main():
             inc_m = st.mask_period(corrected, SR, iw)
             ref_m = st.mask_period(corrected, SR, rw)
 
-            tl, _, _, _ = st.xcorr_lag_us(inc_m, T_launch, SR)
-            tr, _, _, _ = st.xcorr_lag_us(ref_m, T_return, SR)
+            tl, σl, _, _ = st.xcorr_lag_shape_fit(inc_m, T_launch, SR, R_auto=R_auto_L)
+            tr, σr, _, _ = st.xcorr_lag_shape_fit(ref_m, T_return, SR, R_auto=R_auto_R)
             if tl is not None and tr is not None:
                 tau_l_all.append(tl); tau_r_all.append(tr)
+                sigma_l_all.append(σl); sigma_r_all.append(σr)
                 eval_idx.append(global_period)
                 eval_count += 1
             global_period += 1
@@ -216,9 +223,11 @@ def main():
                   f"σ(Δτ)={np.std(np.array(tau_r_all)-np.array(tau_l_all)):.3f}μs",
                   end='\r')
 
-    tau_l = np.array(tau_l_all)
-    tau_r = np.array(tau_r_all)
-    dt    = tau_r - tau_l
+    tau_l   = np.array(tau_l_all)
+    tau_r   = np.array(tau_r_all)
+    sigma_l = np.array(sigma_l_all)
+    sigma_r = np.array(sigma_r_all)
+    dt      = tau_r - tau_l
     print(f"\n\nResults:  N={len(dt):,}")
     print(f"  σ(Δτ) = {dt.std():.3f} μs  →  {dt.std()/10.3:.4f} °C/ping")
     print(f"  mean  = {dt.mean():.3f} μs")
@@ -226,6 +235,9 @@ def main():
           f"= {(dt.max()-dt.min())/10.3:.3f} °C total drift")
 
     # ── Step 4: plot ──────────────────────────────────────────────────────────
+    # Write outputs to stubbs_pipeline_v1/ subdir (LS shape-fit results)
+    pipeline_dir = os.path.join(out_dir, 'stubbs_pipeline_v1')
+    os.makedirs(pipeline_dir, exist_ok=True)
     time_min = np.array(eval_idx) / rep / 60.0
 
     fig, axes = plt.subplots(2, 1, figsize=(14, 7))
@@ -261,15 +273,92 @@ def main():
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3, ls='--')
 
     plt.tight_layout()
-    out_png = os.path.join(out_dir, f'stubbs_longterm_{label}.png')
+    out_png = os.path.join(pipeline_dir, f'stubbs_lsfit.png')
     plt.savefig(out_png, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"\nPlot: {out_png}")
 
-    # Save arrays
-    out_npz = os.path.join(out_dir, f'stubbs_longterm_{label}.npz')
-    np.savez(out_npz, tau_launch=tau_l, tau_return=tau_r,
-             delta_tau=dt, eval_idx=np.array(eval_idx), rep_rate=rep)
+    # ── hist_delta_tau.png ────────────────────────────────────────────────────
+    good = np.abs(dt) <= 5.0
+    dt_c = dt[good]; mean_c = dt_c.mean(); std_c = dt_c.std()
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.set_title(f'{label}  —  Δτ between-measurement spread  (N={good.sum():,})',
+                 fontsize=12, fontweight='bold')
+    ax.hist(dt_c, bins=120, color='#4878cf', edgecolor='white', lw=0.3, alpha=0.85)
+    ax.axvline(mean_c, color='C3', lw=2, label=f'mean = {mean_c:.3f} μs')
+    ax.axvline(mean_c - std_c, color='C3', lw=1.5, ls='--')
+    ax.axvline(mean_c + std_c, color='C3', lw=1.5, ls='--',
+               label=f'±1σ = {std_c:.3f} μs → {std_c/10.3:.4f} °C/ping')
+    ax.set_xlabel('Δτ (μs)', fontsize=11); ax.set_ylabel('Count', fontsize=11)
+    ax.legend(fontsize=10); ax.grid(True, alpha=0.3, ls='--')
+    plt.tight_layout()
+    plt.savefig(os.path.join(pipeline_dir, 'hist_delta_tau.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+
+    # ── hist_uncertainties.png ────────────────────────────────────────────────
+    from matplotlib.lines import Line2D
+    sl_ns = sigma_l[good] * 1000; sr_ns = sigma_r[good] * 1000
+    sp_ns = np.sqrt(sl_ns**2 + sr_ns**2)
+    # clip extreme lsfit outliers for display
+    sl_d = sl_ns[sl_ns < np.percentile(sl_ns, 99)]
+    sr_d = sr_ns[sr_ns < np.percentile(sr_ns, 99)]
+    sp_d = sp_ns[sp_ns < np.percentile(sp_ns, 99)]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig.suptitle(f'{label}  —  Per-period fit uncertainty propagation\n'
+                 r'$\delta_{\Delta\tau}=\sqrt{\delta_L^2+\delta_R^2}$  (LS shape-fit, full 1-hr run)',
+                 fontsize=10, fontweight='bold')
+    def up(ax, data, label_str, color, xlabel):
+        mu, sig = data.mean(), data.std()
+        ax.hist(data, bins=80, color=color, edgecolor='white', lw=0.3, alpha=0.85)
+        ax.axvline(mu, color='C3', lw=2)
+        ax.axvline(mu-sig, color='C3', lw=1.3, ls='--')
+        ax.axvline(mu+sig, color='C3', lw=1.3, ls='--')
+        ax.set_title(f'{label_str}  (N={len(data):,})', fontsize=9)
+        ax.set_xlabel(xlabel, fontsize=9); ax.set_ylabel('Count', fontsize=9)
+        ax.text(0.97, 0.97, f'mean = {mu:.1f} ns\nσ = {sig:.1f} ns',
+                transform=ax.transAxes, fontsize=8, va='top', ha='right',
+                family='monospace', bbox=dict(boxstyle='round', fc='white', alpha=0.85, ec='#ccc'))
+        ax.legend([Line2D([0],[0],color='C3',lw=2), Line2D([0],[0],color='C3',lw=1.3,ls='--')],
+                  [f'mean = {mu:.1f} ns', f'±1σ = {sig:.1f} ns'], fontsize=8)
+        ax.grid(True, alpha=0.3, ls='--')
+    up(axes[0], sl_d, r'$\delta_{launch}$  (xcorr fit uncertainty)', '#4878cf', 'δ_launch (ns)')
+    up(axes[1], sr_d, r'$\delta_{return}$  (xcorr fit uncertainty)', '#6acc65', 'δ_return (ns)')
+    up(axes[2], sp_d, r'$\sqrt{\delta_L^2+\delta_R^2}$  (propagated Δτ fit uncertainty)', '#b47cc7',
+       r'$\sqrt{\delta_L^2+\delta_R^2}$ (ns)')
+    axes[2].axvline(std_c * 1000, color='C1', lw=2, ls=':')
+    axes[2].legend([Line2D([0],[0],color='C3',lw=2),
+                    Line2D([0],[0],color='C3',lw=1.3,ls='--'),
+                    Line2D([0],[0],color='C1',lw=2,ls=':')],
+                   [f'mean = {sp_d.mean():.1f} ns', f'±1σ = {sp_d.std():.1f} ns',
+                    f'σ(Δτ) meas = {std_c*1000:.0f} ns'], fontsize=7.5)
+    plt.tight_layout()
+    plt.savefig(os.path.join(pipeline_dir, 'hist_uncertainties.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+
+    # ── per_period.xlsx — 1-second bins ──────────────────────────────────────
+    import pandas as pd
+    t_sec_arr = np.array(eval_idx)[good] / rep
+    sp_all = np.sqrt(sigma_l[good]**2 + sigma_r[good]**2) * 1000
+    rows = []
+    for i in range(int(t_sec_arr.max()) + 1):
+        m = (t_sec_arr >= i) & (t_sec_arr < i + 1)
+        if not m.any(): continue
+        rows.append({'time_s': i+0.5, 'time_min': round((i+0.5)/60, 4),
+                     'n_periods': int(m.sum()),
+                     'mean_delta_tau_us': round(float(dt_c[m].mean()), 4),
+                     'std_delta_tau_us':  round(float(dt_c[m].std()),  4),
+                     'median_delta_tau_us': round(float(np.median(dt_c[m])), 4),
+                     'mean_sigma_prop_ns': round(float(sp_all[m].mean()), 2),
+                     'median_sigma_prop_ns': round(float(np.median(sp_all[m])), 2)})
+    pd.DataFrame(rows).to_excel(os.path.join(pipeline_dir, 'per_period.xlsx'), index=False)
+    print(f"Spreadsheet: per_period.xlsx  ({len(rows)} rows, 1-second bins)")
+
+    # Save arrays — include sigma arrays for future use
+    out_npz = os.path.join(pipeline_dir, f'stubbs_lsfit.npz')
+    np.savez(out_npz, tau_launch=tau_l, tau_return=tau_r, delta_tau=dt,
+             sigma_launch=sigma_l, sigma_return=sigma_r,
+             eval_idx=np.array(eval_idx), rep_rate=rep)
     print(f"Data: {out_npz}")
 
 if __name__ == '__main__':
