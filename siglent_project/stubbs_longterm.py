@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
 """
-Memory-efficient Stubbs LS shape-fit analysis for long recordings (>10 min).
+Memory-efficient Stubbs analysis for long recordings (>10 min).
 
 Strategy:
-  1. Use fixed-period slicing (k × period_n) throughout — same as analyze().
-     The burst stays within the window for the full hour because the total
-     accumulated clock drift (~9.5 ms for a0.3_sm_4ms) is less than one period.
-  2. Maintain a single global EMA drift tracker across all chunks, exactly
-     matching the post-bootstrap narrow-window alignment used in analyze().
-     This eliminates the ±2ms wide-window jitter of the old per-chunk
-     adaptive slicer approach.
-  3. Templates built from the first N_TEMPLATE fixed-period windows.
-     iw/rw window detection uses the adaptive slicer on just the first
-     10 periods (no drift yet — reliable detection, no memory impact).
-  4. Evaluate remaining periods in CHUNK_P batches for memory efficiency.
-  5. LS shape-fit (xcorr_lag_shape_fit) with precomputed R_auto for speed.
+  1. Build templates from the first N_TEMPLATE periods (streaming, no full load)
+  2. Evaluate remaining periods in CHUNK_PERIODS batches
+  3. Store only scalar Δτ values — never hold all period arrays in RAM
+  4. Plot the full Δτ time series at the end
 
-Memory usage: O(CHUNK_P × period_samples) float32  ≈ a few hundred MB.
+Memory usage: O(N_TEMPLATE × period_samples) + O(CHUNK_PERIODS × period_samples)
+             ≈ a few hundred MB instead of tens of GB
 """
 import sys, os, argparse
 import numpy as np
@@ -75,132 +68,159 @@ def main():
     print(f"Loading: {os.path.basename(args.wav)}")
     fs, raw = wavfile.read(args.wav)
     assert fs == SR, f"Expected {SR} Hz, got {fs}"
+    # Keep as int16 until needed — defers 8GB allocation
     total_samples = len(raw)
     period_n = round(SR / rep)
     total_periods = total_samples // period_n
     print(f"  Duration: {total_samples/SR/60:.1f} min  |  "
           f"Period: {period_n/SR*1000:.1f} ms  |  Total periods: {total_periods:,}")
 
-    # ── Step 1: detect iw/rw from first 10 periods (adaptive slicer, no drift yet) ──
-    print("\nDetecting incident/reflected windows from first 10 periods...")
-    probe_samples = 15 * period_n
+    # ── Step 1: find adaptive slices using first 2 min (memory-safe) ──────────
+    print("\nDetecting period boundaries from first 2 min...")
+    probe_s = min(120, total_samples/SR)
+    probe_samples = int(probe_s * SR)
     probe_sig = hp(raw[:probe_samples].astype(np.float32) / 32768.0)
     slices_probe = st.adaptive_slice_periods(probe_sig, SR, rep)
     if not slices_probe:
-        print("  ERROR: no periods found."); return
-    i0 = min(5, len(slices_probe) - 1)
+        print("  ERROR: no periods found. Check rep_rate and signal."); return
+
+    # Detect incident/reflected windows from a settled probe period
+    i0 = min(10, len(slices_probe)-1)
     iw, rw = st.detect_windows(probe_sig[slices_probe[i0][0]:slices_probe[i0][1]],
                                 SR, tof_us=5700.0)
-    print(f"  Incident:  [{iw[0]:.2f}, {iw[1]:.2f}] ms")
-    print(f"  Reflected: [{rw[0]:.2f}, {rw[1]:.2f}] ms")
+    print(f"  Incident:  [{iw[0]:.1f}, {iw[1]:.1f}] ms")
+    print(f"  Reflected: [{rw[0]:.1f}, {rw[1]:.1f}] ms  (sep={rw[0]-iw[0]:.1f} ms)")
 
-    # ── Step 2: templates from first N_TMPL fixed-period windows + global EMA ──
-    # Fixed slicing: period k = raw[k*period_n : (k+1)*period_n].
-    # ref0 = first fixed-window period (burst somewhere inside, not necessarily centred).
-    # EMA tracks the burst's drift within the fixed window identically to analyze().
-    N_TMPL      = args.n_template
-    center_idx  = period_n - 1        # lag=0 index in a full-length xcorr
-    radius_boot = int(0.002 * SR)     # ±2ms bootstrap search window
-    narrow      = int(0.0003 * SR)    # ±0.3ms narrow window (post-bootstrap)
+    # ── Step 2: build templates from first N_TEMPLATE periods ─────────────────
+    N_TMPL = min(args.n_template, len(slices_probe) - 5)
+    print(f"\nBuilding templates from {N_TMPL} periods...")
+
+    # Reference for alignment: full period of probe period 0
+    ref0 = probe_sig[slices_probe[0][0]:slices_probe[0][1]].copy()
+    center_idx = period_n - 1
+    radius_boot = int(0.002 * SR)
+    narrow      = int(0.0003 * SR)
     N_BOOT      = min(50, N_TMPL)
-    EMA_TAU     = 200.0; alpha_ema = 1.0 / EMA_TAU
+    EMA_TAU     = 200.0; alpha_ema = 1.0/EMA_TAU
 
-    # Load template chunk (first N_TMPL periods) and HP-filter once
-    tmpl_raw = raw[:N_TMPL * period_n].astype(np.float32) / 32768.0
-    tmpl_sig = hp(tmpl_raw)
-    ref0 = tmpl_sig[:period_n].copy()   # first fixed-window period as reference
+    shifts_tmpl = np.zeros(N_TMPL)
+    ema_rate    = 0.0
 
-    print(f"\nBuilding templates from {N_TMPL} fixed-period windows...")
-    shifts_tmpl = np.zeros(N_TMPL); ema_rate = 0.0
+    for i in range(1, N_TMPL):
+        s_,e_ = slices_probe[i]
+        seg = probe_sig[s_:e_]
+        xc = correlate(seg, ref0, mode='full')
 
-    def _align_shift(period, k):
-        """Return sub-sample alignment shift for period k using global EMA."""
-        xc = correlate(period, ref0, mode='full')
-        if k < N_BOOT:
-            lo = max(0, center_idx - radius_boot)
-            hi = min(len(xc), center_idx + radius_boot)
+        if i < N_BOOT:
+            lo = max(0, center_idx-radius_boot)
+            hi = min(len(xc), center_idx+radius_boot)
         else:
-            pred_c = int(np.clip(center_idx + round(ema_rate * k),
-                                 narrow, len(xc) - narrow - 1))
-            lo = max(0, pred_c - narrow)
-            hi = min(len(xc), pred_c + narrow)
-        if hi <= lo:
-            return 0.0
+            pred_c = center_idx + int(round(ema_rate*i))
+            lo = max(0, pred_c-narrow); hi = min(len(xc), pred_c+narrow)
+
         env = np.abs(hilbert(xc[lo:hi]))
-        lp = int(np.argmax(env)); hw = 5
-        sl, sh = max(0, lp-hw), min(len(env), lp+hw+1)
-        x = np.arange(sl, sh, dtype=float) - lp; y = env[sl:sh]
-        shift = float(lp + lo - center_idx)
-        if len(y) >= 5 and np.ptp(y) > 1e-12:
-            cc = np.polyfit(x, y, 2); a, b = cc[0], cc[1]
-            if abs(a) > 1e-10:
-                shift = float(lp + np.clip(-b/(2*a), -hw, hw) + lo - center_idx)
-        return shift
+        lp  = int(np.argmax(env)); hw=5
+        sl,sh = max(0,lp-hw), min(len(env),lp+hw+1)
+        x=np.arange(sl,sh,dtype=float)-lp; y=env[sl:sh]
+        shift = float(lp+lo-center_idx)
+        if len(y)>=5 and np.ptp(y)>1e-12:
+            coeffs=np.polyfit(x,y,2); a,b=coeffs[0],coeffs[1]
+            if abs(a)>1e-10:
+                dl=float(np.clip(-b/(2*a),-hw,hw))
+                shift = float(lp+dl+lo-center_idx)
+        shifts_tmpl[i] = shift
+        if i>=N_BOOT:
+            ema_rate=(1-alpha_ema)*ema_rate+alpha_ema*(shift/i)
+        elif i==N_BOOT:
+            ema_rate = np.polyfit(np.arange(1,N_BOOT+1),shifts_tmpl[1:N_BOOT+1],1)[0]
 
-    for k in range(1, N_TMPL):
-        period = tmpl_sig[k*period_n:(k+1)*period_n]
-        shift = _align_shift(period, k)
-        shifts_tmpl[k] = shift
-        if k == N_BOOT:
-            ema_rate = np.polyfit(np.arange(1, N_BOOT+1),
-                                  shifts_tmpl[1:N_BOOT+1], 1)[0]
-        elif k > N_BOOT:
-            ema_rate = (1-alpha_ema)*ema_rate + alpha_ema*(shift/k)
-
-    T_launch_acc = np.zeros(period_n, np.float64)
-    T_return_acc = np.zeros(period_n, np.float64)
-    for k in range(N_TMPL):
-        period = tmpl_sig[k*period_n:(k+1)*period_n]
-        corr = apply_correction(period, shifts_tmpl[k])
-        T_launch_acc += st.mask_period(corr, SR, iw)
-        T_return_acc += st.mask_period(corr, SR, rw)
+    T_launch_acc = np.zeros(period_n, dtype=np.float64)
+    T_return_acc = np.zeros(period_n, dtype=np.float64)
+    for i in range(N_TMPL):
+        s_,e_ = slices_probe[i]
+        corrected = apply_correction(probe_sig[s_:e_], shifts_tmpl[i])
+        T_launch_acc += st.mask_period(corrected, SR, iw)
+        T_return_acc += st.mask_period(corrected, SR, rw)
     T_launch = (T_launch_acc / N_TMPL).astype(np.float32)
     T_return = (T_return_acc / N_TMPL).astype(np.float32)
     print(f"  T_launch peak: {np.max(np.abs(T_launch)):.4f}  "
           f"T_return peak: {np.max(np.abs(T_return)):.4f}")
-    print(f"  EMA rate after template build: {ema_rate:.4f} samples/period "
-          f"= {ema_rate/SR*1e6:.3f} μs/period")
 
-    # Precompute template autocorrelations for LS shape-fit
+    # Precompute template autocorrelations for LS shape-fit (avoids recomputing per period)
     R_auto_L = correlate(T_launch.astype(float), T_launch.astype(float), mode='full')
     R_auto_R = correlate(T_return.astype(float), T_return.astype(float), mode='full')
+    print(f"  R_auto precomputed (len={len(R_auto_L)})")
 
-    # ── Step 3: evaluate remaining periods — fixed slicing + global EMA ────────
-    # EMA state (ema_rate) persists from template phase through all chunks.
-    # Narrow ±0.3ms window used for all evaluation periods (EMA converged).
+    # ── Step 3: evaluate all remaining periods in chunks ──────────────────────
+    # Uses xcorr_lag_shape_fit (LS shape-fit) — fits the measured CCF to the
+    # template autocorrelation shape using carrier phase, not just envelope max.
+    # Precomputed R_auto_L / R_auto_R avoid recomputing per period.
     print(f"\nEvaluating {total_periods - N_TMPL:,} periods in chunks of {args.chunk}...")
-    tau_l_all=[]; tau_r_all=[]; eval_idx=[]; sigma_l_all=[]; sigma_r_all=[]
-    CHUNK_P = args.chunk; eval_count = 0
+    tau_l_all = []; tau_r_all = []; eval_idx = []
+    sigma_l_all = []; sigma_r_all = []
 
+    CHUNK_P = args.chunk
     start_period = N_TMPL
+    eval_count = 0
+    global_period = N_TMPL   # monotonically increasing period counter
+
     while start_period < total_periods:
         end_period = min(start_period + CHUNK_P, total_periods)
-        chunk_sig = hp(raw[start_period*period_n : end_period*period_n]
-                       .astype(np.float32) / 32768.0)
+        s_raw = start_period * period_n
+        e_raw = end_period   * period_n
+        chunk_raw = raw[s_raw:e_raw]
+        chunk_sig = hp(chunk_raw.astype(np.float32) / 32768.0)
 
-        for j in range(end_period - start_period):
-            k = start_period + j          # global period index
-            period = chunk_sig[j*period_n:(j+1)*period_n]
+        # Adaptively locate each burst within this chunk — handles any
+        # accumulated clock drift transparently.
+        chunk_slices = st.adaptive_slice_periods(chunk_sig, SR, rep)
+        if not chunk_slices:
+            start_period = end_period
+            global_period += end_period - start_period
+            continue
 
-            shift = _align_shift(period, k)
-            # EMA update (always in narrow phase for eval)
-            if k > 0:
-                ema_rate = (1-alpha_ema)*ema_rate + alpha_ema*(shift/k)
+        for slice_s, slice_e in chunk_slices:
+            period = chunk_sig[slice_s:slice_e]
+            if len(period) < period_n // 2:
+                global_period += 1
+                continue
 
-            corr  = apply_correction(period, shift)
-            inc_m = st.mask_period(corr, SR, iw)
-            ref_m = st.mask_period(corr, SR, rw)
+            # Fine alignment: xcorr with ref0, ±2ms window around center_idx.
+            # Adaptive slicing can place the burst up to ~2ms from center_idx,
+            # so radius_boot (2ms) is needed; ±narrow (0.3ms) misses the peak.
+            xc = correlate(period, ref0, mode='full')
+            lo = max(0, center_idx - radius_boot)
+            hi = min(len(xc), center_idx + radius_boot)
+            if hi <= lo:
+                global_period += 1
+                continue
+            env = np.abs(hilbert(xc[lo:hi]))
+            lp = int(np.argmax(env)); hw = 5
+            sl, sh = max(0, lp-hw), min(len(env), lp+hw+1)
+            x = np.arange(sl, sh, dtype=float) - lp; y = env[sl:sh]
+            shift = float(lp + lo - center_idx)
+            if len(y) >= 5 and np.ptp(y) > 1e-12:
+                coeffs = np.polyfit(x, y, 2); a, b = coeffs[0], coeffs[1]
+                if abs(a) > 1e-10:
+                    dl = float(np.clip(-b / (2*a), -hw, hw))
+                    shift = float(lp + dl + lo - center_idx)
+
+            corrected = apply_correction(period, shift)
+            inc_m = st.mask_period(corrected, SR, iw)
+            ref_m = st.mask_period(corrected, SR, rw)
 
             tl, σl, _, _ = st.xcorr_lag_shape_fit(inc_m, T_launch, SR, R_auto=R_auto_L)
             tr, σr, _, _ = st.xcorr_lag_shape_fit(ref_m, T_return, SR, R_auto=R_auto_R)
             if tl is not None and tr is not None:
                 tau_l_all.append(tl); tau_r_all.append(tr)
                 sigma_l_all.append(σl); sigma_r_all.append(σr)
-                eval_idx.append(k); eval_count += 1
+                eval_idx.append(global_period)
+                eval_count += 1
+            global_period += 1
 
         start_period = end_period
         pct = start_period / total_periods * 100
-        if eval_count % 2000 == 0 or start_period == total_periods:
+        if eval_count % 1000 == 0 or start_period == total_periods:
             print(f"  {pct:.0f}%  eval={eval_count:,}  "
                   f"σ(Δτ)={np.std(np.array(tau_r_all)-np.array(tau_l_all)):.3f}μs",
                   end='\r')
