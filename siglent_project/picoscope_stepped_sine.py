@@ -54,11 +54,13 @@ N_SAMPLES     = 50_000        # samples per capture = 50 ms window (~2000 cycles
                                # jitter dominates, which it doesn't here).
 N_AVG         = 1             # single long capture per frequency — see N_SAMPLES above
 
-# ── PicoScope: Channel A (mic response via SR560) ─────────────────────────────
-# SR560 at ×100 gain clips at ±1V input, so its output is ≤ ±1V.
-# ±500mV range: 2× headroom below SR560 clip. Raise to PS5000A_1V if needed.
-# Lower to PS5000A_200MV for better resolution if signal is well below ±200mV.
-CH_A_RANGE    = ps.PS5000A_RANGE["PS5000A_500MV"]   # ±500 mV
+# ── PicoScope: Channel A (mic response via SR560 at ×100) ────────────────────
+# SR560 at ×100 clips at ±10 mV input → ±1V output.
+# ±1V scope range matches the SR560's full output swing exactly — no scope
+# clipping at resonance, full ADC range used.
+# If signal is well below ±100mV across the sweep (check in PicoScope 6 first),
+# switch to PS5000A_200MV for 5× better ADC resolution.
+CH_A_RANGE    = ps.PS5000A_RANGE["PS5000A_1V"]       # ±1 V  (matches SR560 ×100 clip)
 CH_A_COUPLING = ps.PS5000A_COUPLING["PS5000A_AC"]    # AC: block SR560 DC offset
 
 # ── PicoScope: Channel B (SDG reference via BNC T-split) ──────────────────────
