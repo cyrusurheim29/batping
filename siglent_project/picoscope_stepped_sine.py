@@ -47,8 +47,12 @@ SETTLE_MS     = 8             # ms after SDG freq change before capture
 # timebase=252 → (252-2)×4 = 1000 ns/sample = 1 MS/s  (1000 samples/ms)
 RESOLUTION    = ps.PS5000A_DEVICE_RESOLUTION["PS5000A_DR_12BIT"]
 TIMEBASE      = 252           # → 1 μs/sample (1 MS/s)  — 25× oversampling at 40 kHz
-N_SAMPLES     = 10_000        # samples per capture = 10 ms window
-N_AVG         = 5             # captures to average per frequency step
+N_SAMPLES     = 50_000        # samples per capture = 50 ms window (~2000 cycles at 40 kHz)
+                               # Longer window = more coherent FFT integration.
+                               # This is the correct noise reduction strategy, not averaging
+                               # multiple short captures (which only helps if amplitude
+                               # jitter dominates, which it doesn't here).
+N_AVG         = 1             # single long capture per frequency — see N_SAMPLES above
 
 # ── PicoScope: Channel A (mic response via SR560) ─────────────────────────────
 # SR560 at ×100 gain clips at ±1V input, so its output is ≤ ±1V.
