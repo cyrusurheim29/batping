@@ -53,8 +53,9 @@ AMPLITUDE = 0.9
 # Piezo ring-up time ≈ Q/(π·f₀) ≈ 23/(π·40e3) ≈ 180 μs, so measure amplitude
 # in the SECOND HALF of the burst once the piezo has settled.
 BURST_MODE = True           # True = short burst; False = original 300ms continuous
-BURST_DURATION_MS = 4.0     # ms per frequency (4ms → ~160 cycles at 40kHz)
-BURST_AMPL_VPP = 6.0        # Vpp — can drive harder since duty cycle is low
+BURST_DURATION_MS = 8.0     # ms per frequency (8ms → ~320 cycles at 40kHz; reflection arrives at ~11.6ms so settled window is clear)
+BURST_AMPL_VPP = 1.2        # Vpp — 2.0 Vpp still clips at resonance (+2.5 dB peak);
+                             # 1.2 Vpp backs off by factor 0.6 → puts peak at ~-2 dB
 BURST_SETTLE_FRAC = 0.5     # ignore first SETTLE_FRAC of burst (ring-up), measure rest
 
 OUTPUT_DIR = '/Users/cyrusurheim_1/Downloads/Stubbs_Stuff/Claude_Dir/siglent_project/'
@@ -285,25 +286,17 @@ def plot_stepped_sine_result(freqs, H_mag, H_mag_smooth, H_phase,
                              f_center_6db, f_low_6db, f_high_6db, bw_6db,
                              peak_mag, received_example, output_path,
                              chirp_data_path=None):
-    """Create comprehensive stepped-sine characterization plot matching piezo_characterization.py format."""
+    """Stepped-sine characterization plot: full TF | zoomed passband | info panel."""
 
-    # Load chirp data for comparison in passband panel
-    freqs_chirp = None
-    H_mag_chirp = None
-    bw_chirp = None
-    if chirp_data_path:
-        try:
-            chirp_data = np.load(chirp_data_path)
-            freqs_chirp = chirp_data['freqs']
-            H_mag_chirp = chirp_data['H_mag']
-            bw_chirp = float(chirp_data['bandwidth'])
-        except:
-            pass
+    fig = plt.figure(figsize=(14, 9))
+    gs = fig.add_gridspec(2, 2, height_ratios=[5, 1.8],
+                          hspace=0.38, wspace=0.30,
+                          left=0.07, right=0.97, top=0.93, bottom=0.03)
+    ax1     = fig.add_subplot(gs[0, 0])
+    ax2     = fig.add_subplot(gs[0, 1])
+    ax_info = fig.add_subplot(gs[1, :])
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-
-    # Panel 1: Magnitude response (full range)
-    ax1 = axes[0, 0]
+    # ── Panel 1: Full magnitude response (unchanged) ───────────────────────────
     ax1.plot(freqs/1000, H_mag, 'b-', linewidth=0.5, alpha=0.5, label='Raw')
     ax1.plot(freqs/1000, H_mag_smooth, 'b-', linewidth=2, label='Smoothed')
     ax1.axhline(peak_mag - 3, color='r', linestyle='--', label='-3 dB')
@@ -322,107 +315,68 @@ def plot_stepped_sine_result(freqs, H_mag, H_mag_smooth, H_phase,
     ax1.grid(True, alpha=0.3)
     ax1.set_xlim([FREQ_START/1000, FREQ_END/1000])
 
-    # Panel 2: Passband detail with chirp comparison
-    ax2 = axes[0, 1]
-    zoom_mask = (freqs >= 35000) & (freqs <= 48000)
-
-    # Normalize stepped-sine to peak = 0 dB
-    ss_peak = np.max(H_mag_smooth)
-    ax2.plot(freqs[zoom_mask]/1000, H_mag[zoom_mask] - ss_peak, 'b-', linewidth=0.5, alpha=0.3)
-    ax2.plot(freqs[zoom_mask]/1000, H_mag_smooth[zoom_mask] - ss_peak, 'b-', linewidth=2,
-             label=f'Stepped-Sine (BW={bw_3db/1000:.2f} kHz)')
-
-    # Add chirp trace if available
-    if freqs_chirp is not None and H_mag_chirp is not None:
-        chirp_zoom_mask = (freqs_chirp >= 35000) & (freqs_chirp <= 48000)
-        chirp_peak = np.max(H_mag_chirp)
-        ax2.plot(freqs_chirp[chirp_zoom_mask]/1000, H_mag_chirp[chirp_zoom_mask] - chirp_peak,
-                 'r-', linewidth=2, alpha=0.7, label=f'Chirp (BW={bw_chirp/1000:.2f} kHz)')
-
-    ax2.axhline(-3, color='gray', linestyle='--', linewidth=1.5, label='-3 dB')
-    ax2.axhline(-6, color='gray', linestyle='--', linewidth=1, alpha=0.7, label='-6 dB')
+    # ── Panel 2: Zoomed passband detail (stepped-sine only, no chirp) ─────────
+    zoom_lo, zoom_hi = 35000, 48000
+    zoom_mask = (freqs >= zoom_lo) & (freqs <= zoom_hi)
+    ax2.plot(freqs[zoom_mask]/1000, H_mag[zoom_mask], 'b-', linewidth=0.5, alpha=0.5, label='Raw')
+    ax2.plot(freqs[zoom_mask]/1000, H_mag_smooth[zoom_mask], 'b-', linewidth=2, label='Smoothed')
+    ax2.axhline(peak_mag - 3, color='r', linestyle='--', linewidth=1.5, label='-3 dB')
+    ax2.axhline(peak_mag - 6, color='orange', linestyle='--', linewidth=1.2, label='-6 dB')
+    ax2.axvline(f_low_3db/1000, color='g', linestyle=':', alpha=0.8)
+    ax2.axvline(f_high_3db/1000, color='g', linestyle=':', alpha=0.8)
+    ax2.axvline(f_center_3db/1000, color='g', linestyle='-', alpha=0.8,
+                label=f'Center: {f_center_3db/1000:.1f} kHz')
+    y_lo = peak_mag - 20
+    y_hi = peak_mag + 2
+    ax2.fill_betweenx([y_lo, y_hi], f_low_3db/1000, f_high_3db/1000,
+                      alpha=0.2, color='green', label=f'BW: {bw_3db/1000:.1f} kHz')
     ax2.set_xlabel('Frequency (kHz)')
-    ax2.set_ylabel('Magnitude (dB, normalized)')
-    ax2.set_title(f'Passband Comparison — Stepped-Sine BW: {bw_3db/1000:.2f} kHz')
-    ax2.legend(loc='lower right', fontsize=8)
+    ax2.set_ylabel('Magnitude (dB)')
+    ax2.set_title('Passband Detail (Zoomed)')
+    ax2.legend(loc='upper right', fontsize=8)
     ax2.grid(True, alpha=0.3)
-    ax2.set_ylim([-25, 3])
+    ax2.set_xlim([zoom_lo/1000, zoom_hi/1000])
+    ax2.set_ylim([y_lo, y_hi])
 
-    # Panel 3: Phase response (detrended to show resonant behavior)
-    ax3 = axes[1, 0]
-    phase_unwrapped = np.unwrap(H_phase)
+    # ── Info panel (no axes, three columns, no overlap) ────────────────────────
+    ax_info.axis('off')
 
-    # Remove linear trend (propagation delay) to reveal resonant phase shift
-    # Fit line to regions away from resonance
-    mask_fit = (freqs < 35000) | (freqs > 47000)
-    if np.sum(mask_fit) > 10:
-        coeffs = np.polyfit(freqs[mask_fit], phase_unwrapped[mask_fit], 1)
-        phase_linear = np.polyval(coeffs, freqs)
-        phase_detrended = phase_unwrapped - phase_linear
-
-        # Convert to degrees for readability
-        phase_detrended_deg = np.degrees(phase_detrended)
-
-        ax3.plot(freqs/1000, phase_detrended_deg, 'b-', linewidth=1)
-        ax3.set_ylabel('Phase (degrees, detrended)')
-        ax3.set_title('Resonant Phase Shift (propagation delay removed)')
-    else:
-        # Fallback to raw unwrapped phase
-        ax3.plot(freqs/1000, phase_unwrapped, 'b-', linewidth=1)
-        ax3.set_ylabel('Phase (radians)')
-        ax3.set_title('Piezo Transfer Function - Phase Response')
-
-    ax3.axvline(f_low_3db/1000, color='g', linestyle=':', alpha=0.7)
-    ax3.axvline(f_high_3db/1000, color='g', linestyle=':', alpha=0.7)
-    ax3.axvline(f_center_3db/1000, color='purple', linestyle=':', alpha=0.7)
-    ax3.set_xlabel('Frequency (kHz)')
-    ax3.grid(True, alpha=0.3)
-    ax3.set_xlim([30, 50])  # Zoom to see resonant region
-
-    # Panel 4: Time-domain received signal (example from one frequency)
-    ax4 = axes[1, 1]
-    t_received = np.arange(len(received_example)) / DODOMIC_SAMPLE_RATE * 1000  # ms
-    ax4.plot(t_received, received_example, 'b-', linewidth=0.5)
-    ax4.set_xlabel('Time (ms)')
-    ax4.set_ylabel('Amplitude')
-    ax4.set_title('Received Signal (Time Domain) - Example')
-    ax4.grid(True, alpha=0.3)
-    ax4.set_xlim([0, min(50, t_received[-1])])
-
-    # Add summary text (bottom left)
-    fig.suptitle('Piezoelectric Transducer Characterization (Stepped-Sine)', fontsize=14, fontweight='bold')
-
-    # Calculate derived parameters with explanation
+    rec_dur_str = (f"{BURST_DURATION_MS:.0f} ms/freq (BURST)"
+                   if BURST_MODE else f"{RECORD_DURATION*1000:.0f} ms/freq")
     min_chip_us = 1e6 / bw_3db if bw_3db > 0 else 0
-    rec_chip_min = min_chip_us
-    rec_chip_max = 2 * min_chip_us
 
-    summary_text = (
+    col1 = (
         f"MEASUREMENT PARAMETERS\n"
-        f"  Frequency range: {FREQ_START/1000:.0f} - {FREQ_END/1000:.0f} kHz\n"
-        f"  Step size: {FREQ_STEP} Hz\n"
-        f"  Number of points: {len(freqs)}\n"
-        f"  Record duration: {RECORD_DURATION*1000:.0f} ms/freq\n"
-        f"\n"
-        f"RESULTS\n"
-        f"  Center Frequency: {f_center_3db/1000:.2f} kHz\n"
-        f"  -3 dB Bandwidth: {bw_3db/1000:.2f} kHz\n"
-        f"  -3 dB Passband: {f_low_3db/1000:.1f} - {f_high_3db/1000:.1f} kHz\n"
-        f"  -6 dB Bandwidth: {bw_6db/1000:.2f} kHz\n"
-        f"  -6 dB Passband: {f_low_6db/1000:.1f} - {f_high_6db/1000:.1f} kHz\n"
-        f"  Q Factor: {f_center_3db/bw_3db:.1f}\n"
-        f"\n"
-        f"DERIVED PARAMETERS\n"
-        f"  Min chip duration: {min_chip_us:.0f} us\n"
-        f"    (= 1/BW = 1/{bw_3db/1000:.2f} kHz)\n"
-        f"  Recommended T_c: {rec_chip_min:.0f} - {rec_chip_max:.0f} us"
+        f"  Freq range:  {FREQ_START/1000:.0f} – {FREQ_END/1000:.0f} kHz\n"
+        f"  Step size:   {FREQ_STEP} Hz\n"
+        f"  N points:    {len(freqs)}\n"
+        f"  Rec. dur.:   {rec_dur_str}"
     )
-    fig.text(0.02, 0.02, summary_text, fontsize=9, family='monospace',
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
-             verticalalignment='bottom')
+    col2 = (
+        f"RESULTS\n"
+        f"  Center Freq:    {f_center_3db/1000:.2f} kHz\n"
+        f"  −3 dB BW:       {bw_3db/1000:.2f} kHz\n"
+        f"  −3 dB Passband: {f_low_3db/1000:.1f} – {f_high_3db/1000:.1f} kHz\n"
+        f"  −6 dB BW:       {bw_6db/1000:.2f} kHz\n"
+        f"  −6 dB Passband: {f_low_6db/1000:.1f} – {f_high_6db/1000:.1f} kHz\n"
+        f"  Q Factor:       {f_center_3db/bw_3db:.1f}"
+    )
+    col3 = (
+        f"DERIVED PARAMETERS\n"
+        f"  Min chip dur.: {min_chip_us:.0f} μs\n"
+        f"    (= 1/BW = 1/{bw_3db/1000:.2f} kHz)\n"
+        f"  Rec. T_c:      {min_chip_us:.0f} – {2*min_chip_us:.0f} μs"
+    )
 
-    plt.tight_layout(rect=[0, 0.08, 1, 0.96])
-    plt.savefig(output_path, dpi=150)
+    kw = dict(transform=ax_info.transAxes, fontsize=9.5, family='monospace',
+              va='center', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    ax_info.text(0.01, 0.5, col1, ha='left', **kw)
+    ax_info.text(0.36, 0.5, col2, ha='left', **kw)
+    ax_info.text(0.70, 0.5, col3, ha='left', **kw)
+
+    fig.suptitle('Piezoelectric Transducer Characterization (Stepped-Sine)',
+                 fontsize=14, fontweight='bold')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"\nSaved standalone plot: {output_path}")
     plt.close()
 
@@ -704,8 +658,12 @@ def main():
     if received_example is None:
         received_example = np.zeros(1000)
 
+    from datetime import datetime as _dt
+    stamp = _dt.now().strftime('%Y%m%d_%H%M%S')
+    mode_tag = f"burst{BURST_DURATION_MS:.0f}ms" if BURST_MODE else "300ms"
+
     # Save raw data
-    data_path = OUTPUT_DIR + 'stepped_sine_characterization.npz'
+    data_path = OUTPUT_DIR + f'stepped_sine_characterization_{mode_tag}_{stamp}.npz'
     np.savez(data_path,
              freqs=freqs_measured,
              H_mag=H_mag,
@@ -730,7 +688,7 @@ def main():
         f_center_3db, f_low_3db, f_high_3db, bw_3db,
         f_center_6db, f_low_6db, f_high_6db, bw_6db,
         peak_mag, received_example,
-        OUTPUT_DIR + 'stepped_sine_characterization.png',
+        OUTPUT_DIR + f'stepped_sine_characterization_{mode_tag}_{stamp}.png',
         chirp_data_path=OUTPUT_DIR + 'piezo_characterization.npz'
     )
 
@@ -738,7 +696,7 @@ def main():
     plot_comparison_with_chirp(
         freqs_measured, H_mag_smooth, f_center_3db, f_low_3db, f_high_3db, bw_3db,
         chirp_data_path=OUTPUT_DIR + 'piezo_characterization.npz',
-        output_path=OUTPUT_DIR + 'stepped_sine_vs_chirp_comparison.png'
+        output_path=OUTPUT_DIR + f'stepped_sine_vs_chirp_comparison_{mode_tag}_{stamp}.png'
     )
 
     print("\nDone!")

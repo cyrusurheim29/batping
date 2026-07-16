@@ -1,0 +1,43 @@
+{
+  "timestamp": "2026-07-15T15:47:56.682308",
+  "description": "ultramic_sanity_check",
+  "hardware": {
+    "sdg": "SDG1062X @ 10.11.13.230",
+    "mic": "Dodotronic UltraMic 384k",
+    "mic_sample_rate_hz": 384000
+  },
+  "measurements": {
+    "a0.3_sm_4ms": {
+      "sigma_tof_us": 1.6625880550981913,
+      "n_periods": 156,
+      "tof_us": 5682.580048017029,
+      "fwhm_us": 278.6458333333333,
+      "snr_db": 8.275908384012073,
+      "wav": "raw/a0.3_sm_4ms_received.wav"
+    },
+    "a0.3_sm_2ms": {
+      "sigma_tof_us": 1.570965583309877,
+      "n_periods": 175,
+      "tof_us": 5681.811367779739,
+      "fwhm_us": 286.4583333333333,
+      "snr_db": 7.950107128549863,
+      "wav": "raw/a0.3_sm_2ms_received.wav"
+    },
+    "bw_20kHz_wide_4ms_comp": {
+      "sigma_tof_us": 0.3394132303680499,
+      "n_periods": 156,
+      "tof_us": 5694.125571491601,
+      "fwhm_us": 122.39583333333333,
+      "snr_db": 11.309909313310955,
+      "wav": "raw/bw_20kHz_wide_4ms_comp_received.wav"
+    },
+    "bw_10dB_asym_2ms_comp": {
+      "sigma_tof_us": 0.38098893041296833,
+      "n_periods": 175,
+      "tof_us": 5682.564060546611,
+      "fwhm_us": 187.5,
+      "snr_db": 9.91599311393503,
+      "wav": "raw/bw_10dB_asym_2ms_comp_received.wav"
+    }
+  }
+}

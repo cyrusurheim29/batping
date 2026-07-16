@@ -45,32 +45,41 @@ RECORD_DURATION     = 30.0          # s — ~1500-1800 periods at 60Hz
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 OUTPUT_DIR       = '/Users/cyrusurheim_1/Downloads/Stubbs_Stuff/Claude_Dir/siglent_project/'
-PIEZO_CHAR_FILE  = OUTPUT_DIR + 'stepped_sine_characterization.npz'
-VERSION          = "V1"
+# Burst stepped-sine characterization, 8ms/1.2Vpp, Jul 15 2026 — no standing-wave bias
+PIEZO_CHAR_FILE  = OUTPUT_DIR + 'stepped_sine_characterization_burst8ms_20260715_152456.npz'
+VERSION          = "V2"  # V2: new burst H(f) characterization
+
+# Piezo passband from burst stepped-sine (Jul 15 2026, 8ms/1.2Vpp):
+#   -3 dB:  40400–42850 Hz  (2450 Hz)
+#   -6 dB:  39250–43600 Hz  (4350 Hz)
+#  -10 dB:  37200–45000 Hz  (7800 Hz)
+#   center: 41450 Hz
+# (Previous 300ms continuous: center 41350 Hz, -3dB 1700 Hz — narrowed by standing waves)
 
 # ── Chirp configurations ──────────────────────────────────────────────────────
 # (f_start Hz, f_stop Hz, duration_ms, label, amplitude_shape, window, ampl_vpp)
-# ampl_vpp: SDG output voltage — scaled per-waveform so received signal reaches
-#   ~85% of UltraMic full scale.  Measured July 8 from evening recordings at 2Vpp;
-#   new voltages = 2.0 × (0.85 / peak_amplitude_observed).
-#   The flat 6kHz is reduced because it was already near clipping.
+# ampl_vpp: starting values from Jul 8 UltraMic calibration — NEED RE-CALIBRATION
+#   after first run with new H(f) since compensation envelopes have changed.
 CHIRP_CONFIGS = [
     # 30s recordings → ~1800 periods at ~60Hz: 100 for Stubbs template + 1700 eval.
 
     # ── Best performers — Stubbs analysis configs ─────────────────────────────
+    # wide chirps: center 41475 Hz (25 Hz from new 41450 — unchanged)
     (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp',      'piezo_compensated',       'tukey', 8.64),
     (28975, 53975, 2.0, 'bw_25kHz_wide_2ms_comp',       'piezo_compensated',       'tukey', 8.14),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_rect',  'piezo_compensated',       'rect',  5.66),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp',       'piezo_compensated',       'tukey', 6.60),
-    (38475, 44475, 2.0, 'bw_6kHz_sym_2ms_flat',         'flat',                    'tukey', 2.33, 23.0),
+    # asym chirps: updated to new -10 dB crossings (37200–45000 Hz)
+    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_comp_rect',   'piezo_compensated',       'rect',  5.66),
+    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_comp',        'piezo_compensated',       'tukey', 6.60),
+    # 6kHz sym: recentered on 41450 Hz → 38450–44450 Hz
+    (38450, 44450, 2.0, 'bw_6kHz_sym_2ms_flat',         'flat',                    'tukey', 2.33, 23.0),
 
     # ── Reduced-compensation variants (20% floor = 14dB max boost) ───────────
     (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp_light', 'piezo_compensated_light', 'tukey', 6.04),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_comp_light', 'piezo_compensated_light', 'tukey', 5.59),
+    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_comp_light',  'piezo_compensated_light', 'tukey', 5.59),
 
     # ── Diffraction-compensated variants ──────────────────────────────────────
     (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_diff', 'piezo_compensated_diffraction', 'tukey', 5.97),
-    (36650, 44125, 2.0, 'hf_m15dB_asym_2ms_diff', 'piezo_compensated_diffraction', 'tukey', 6.09),
+    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_diff',  'piezo_compensated_diffraction', 'tukey', 6.09),
 ]
 
 # TOF search window for 2 m round trip (~5800 μs)
@@ -138,16 +147,18 @@ class SDG1062X_LAN:
 def load_piezo_response():
     """
     Load stepped-sine frequency response for amplitude compensation.
-    H_mag_smooth is in dB; convert to linear amplitude and normalize to peak=1.
+    Applies w=71 SG smooth before converting to linear so the compensation
+    envelope is clean — the raw burst data is too noisy at w=11.
     """
     try:
+        from scipy.signal import savgol_filter as _sg
         d = np.load(PIEZO_CHAR_FILE)
         freqs = d['freqs'].astype(float)
-        mag_db = d['H_mag_smooth']
+        mag_db = _sg(d['H_mag'], window_length=71, polyorder=3)
         mag_lin = 10.0 ** (mag_db / 20.0)        # dB → linear amplitude
         mag_lin = mag_lin / np.max(mag_lin)       # normalize peak = 1
         print(f"Loaded piezo response: {len(freqs)} pts, "
-              f"{freqs[0]/1000:.0f}–{freqs[-1]/1000:.0f} kHz")
+              f"{freqs[0]/1000:.0f}–{freqs[-1]/1000:.0f} kHz  (SG w=71)")
         return {'freq': freqs, 'magnitude': mag_lin}
     except Exception as e:
         print(f"Could not load piezo response: {e}")
@@ -731,7 +742,7 @@ def main():
 
     # Archiver setup
     ts      = datetime.now().strftime('%Y%m%d_%H%M%S')
-    run_dir = os.path.join(OUTPUT_DIR, 'recordings', f'{ts}_chirp_sweep')
+    run_dir = os.path.join(OUTPUT_DIR, 'recordings', f'{ts}_chirp_sweep_{VERSION}_newHf')
     raw_dir = os.path.join(run_dir, 'raw')
     plt_dir = os.path.join(run_dir, 'plots')
     os.makedirs(raw_dir, exist_ok=True)

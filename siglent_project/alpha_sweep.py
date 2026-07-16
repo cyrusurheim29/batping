@@ -16,10 +16,12 @@ import chirp_sweep as cs
 
 RECORD_S    = 30.0   # extended to 30s for proper Stubbs analysis (was 10s)
 ALPHAS      = [0.2, 0.3, 0.4, 0.5, 0.6, 0.8]
+# Recentered on new burst-characterization peak (41450 Hz, Jul 15 2026)
+# Old center was ~42000 Hz (from 300ms continuous — standing-wave biased)
 BANDWIDTHS  = [
-    ('sm',  6_000,  39_000, 45_000),   # small:  6 kHz,  39–45 kHz
-    ('md', 12_000,  36_000, 48_000),   # medium: 12 kHz, 36–48 kHz
-    ('lg', 20_000,  32_000, 52_000),   # large:  20 kHz, 32–52 kHz
+    ('sm',  6_000,  38_450, 44_450),   # small:  6 kHz,  38.45–44.45 kHz  (spans -6dB band)
+    ('md', 12_000,  35_450, 47_450),   # medium: 12 kHz, 35.45–47.45 kHz  (spans -10dB band)
+    ('lg', 20_000,  31_450, 51_450),   # large:  20 kHz, 31.45–51.45 kHz  (wide)
 ]
 DURATIONS   = [2.0, 4.0]              # ms
 
@@ -55,7 +57,7 @@ def rep_rate(dur_ms):
 
 def main():
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    run_dir = os.path.join(cs.OUTPUT_DIR, 'recordings', f'{ts}_alpha_sweep')
+    run_dir = os.path.join(cs.OUTPUT_DIR, 'recordings', f'{ts}_alpha_sweep_v2_newHf')
     raw_dir = os.path.join(run_dir, 'raw')
     plt_dir = os.path.join(run_dir, 'plots')
     os.makedirs(raw_dir, exist_ok=True)

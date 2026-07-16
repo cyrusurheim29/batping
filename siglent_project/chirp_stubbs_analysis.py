@@ -774,31 +774,51 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # Panel 3: per-period δ(Δτ) = √(δ_L² + δ_R²) from LS covariance
+    # Panel 3: Δτ time series — hollow black circles + error bars + blue thread
     ax = axes[2]
-    all_vals = np.concatenate([sigma_dt_para, sigma_dt_sf]) * 1e3   # ns
-    p99 = float(np.percentile(all_vals, 99))
-    bins = np.linspace(0, p99, 60)
-    ax.hist(sigma_dt_para * 1e3, bins=bins, color='#888888',   alpha=0.6,
-            label=f'parabola   median={np.median(sigma_dt_para)*1e3:.1f} ns')
-    ax.hist(sigma_dt_sf   * 1e3, bins=bins, color='steelblue', alpha=0.7,
-            label=f'shape-fit  median={np.median(sigma_dt_sf)*1e3:.1f} ns')
-    ax.axvline(np.median(sigma_dt_para)*1e3, color='#555555',   ls='--', lw=1.5)
-    ax.axvline(np.median(sigma_dt_sf)*1e3,   color='steelblue', ls='--', lw=1.5)
-    ax.set_xlabel('δ(Δτ) per period  [ns]  =  √(δ_launch² + δ_return²)')
-    ax.set_ylabel('Count')
-    ax.set_title('Per-period Δτ uncertainty from LS covariance  '
-                 f'(improvement: {np.median(sigma_dt_para)/np.median(sigma_dt_sf):.2f}×)')
+    n_template_used = n_template
+    t_sec = (np.arange(n_eval) + n_template_used) / rep_rate
+    err_us = sigma_dt_sf * 1e6     # shape-fit propagated uncertainty, μs
+
+    # Blue thread
+    ax.plot(t_sec, delta_tau_sf, '-', color='#4477cc', lw=0.7, alpha=0.6, zorder=1)
+    # Error bars + hollow black circles (plot every point; errorevery thins if dense)
+    step = max(1, n_eval // 600)   # cap to ~600 visible error bars
+    ax.errorbar(t_sec[::step], delta_tau_sf[::step], yerr=err_us[::step],
+                fmt='o', ms=2.5, mfc='none', mec='black', mew=0.7,
+                ecolor='black', elinewidth=0.5, capsize=0, zorder=2, alpha=0.7)
+    ax.axhline(mean_dt_sf, color='navy', ls='--', lw=1.2, alpha=0.7,
+               label=f'mean = {mean_dt_sf:.3f} μs')
+    ax.axhline(mean_dt_sf + std_dt_sf, color='gray', ls=':', lw=0.9)
+    ax.axhline(mean_dt_sf - std_dt_sf, color='gray', ls=':', lw=0.9,
+               label=f'σ = {std_dt_sf:.3f} μs  ({std_dt_sf/TOF_SENS_US_PER_DEG:.4f}°C/ping)')
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Δτ (μs)')
+    ax.set_title(f'Δτ time series  (shape-fit)  '
+                 f'N={n_eval}  σ={std_dt_sf:.3f} μs  '
+                 f'δ_prop med={np.median(sigma_dt_sf)*1e6:.0f} ns')
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    if save_plot and output_dir:
-        stem = os.path.splitext(os.path.basename(wav_path))[0]
-        out_path = os.path.join(output_dir, f'stubbs_{stem}.png')
+    stem = os.path.splitext(os.path.basename(wav_path))[0]
+    # Always save into stubbs_pipeline_v1/ next to the WAV file
+    pipeline_dir = os.path.join(os.path.dirname(wav_path), '..', 'stubbs_pipeline_v1')
+    pipeline_dir = os.path.normpath(pipeline_dir)
+    os.makedirs(pipeline_dir, exist_ok=True)
+    if save_plot:
+        out_path = os.path.join(pipeline_dir, f'stubbs_{stem}.png')
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         print(f"\n  Plot saved: {out_path}")
     plt.close()
+    # Save NPZ
+    npz_path = os.path.join(pipeline_dir, f'stubbs_{stem}.npz')
+    np.savez(npz_path,
+             delta_tau=delta_tau_sf, sigma_launch=np.array(sigma_launch_sf_list),
+             sigma_return=np.array(sigma_return_sf_list),
+             tau_launch=tau_launch_sf, tau_return=tau_return_sf,
+             rep_rate=rep_rate, n_template=n_template)
+    print(f"  NPZ  saved: {npz_path}")
 
     return dict(
         T_launch=T_launch, T_return=T_return,

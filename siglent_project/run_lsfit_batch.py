@@ -30,7 +30,7 @@ def rr(dur_ms, dead_ms=15.0):
 
 
 # ── Sessions ──────────────────────────────────────────────────────────────────
-# chirp sweep: explicit dead times (bw_6kHz has 23ms, all others 15ms)
+# chirp sweep Jul 10: explicit dead times (bw_6kHz has 23ms, all others 15ms)
 CHIRP_CFG = {
     'bw_20kHz_wide_4ms_comp':       (4.0, 15.0),
     'bw_20kHz_wide_4ms_comp_light': (4.0, 15.0),
@@ -43,9 +43,25 @@ CHIRP_CFG = {
     'hf_m15dB_asym_2ms_diff':       (2.0, 15.0),
 }
 
+# chirp sweep V2 Jul 15: new H(f), renamed asym chirps (bw_10dB_asym)
+CHIRP_CFG_V2 = {
+    'bw_20kHz_wide_4ms_comp':       (4.0, 15.0),
+    'bw_20kHz_wide_4ms_comp_light': (4.0, 15.0),
+    'bw_20kHz_wide_4ms_diff':       (4.0, 15.0),
+    'bw_25kHz_wide_2ms_comp':       (2.0, 15.0),
+    'bw_6kHz_sym_2ms_flat':         (2.0, 23.0),
+    'bw_10dB_asym_2ms_comp_light':  (2.0, 15.0),
+    'bw_10dB_asym_2ms_comp':        (2.0, 15.0),
+    'bw_10dB_asym_2ms_comp_rect':   (2.0, 15.0),
+    'bw_10dB_asym_2ms_diff':        (2.0, 15.0),
+}
+
 SESSIONS = [
     ('recordings/20260710_030748_chirp_sweep',                        CHIRP_CFG),
     ('recordings/20260710_031308_alpha_sweep_voltage_compensated',     None),   # auto
+    # ── V2: new burst H(f), recentered bands, Jul 15 2026 ────────────────────
+    ('recordings/20260715_161527_chirp_sweep_V2_newHf',               CHIRP_CFG_V2),
+    ('recordings/20260715_162235_alpha_sweep_v2_newHf',               None),   # auto
 ]
 
 
