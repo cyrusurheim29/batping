@@ -98,6 +98,13 @@ def main():
     # Reference for alignment: full period of probe period 0
     ref0 = probe_sig[slices_probe[0][0]:slices_probe[0][1]].copy()
     center_idx = period_n - 1
+
+    # FM3 fix: windowed drift reference (incident window only).
+    # Full-period xcorr dominated by noise for low-SNR waveforms → false drift.
+    iw_s_d = int(iw[0] / 1000 * SR)
+    iw_e_d = min(int(iw[1] / 1000 * SR), period_n)
+    ref0_drift = np.zeros(period_n, dtype=np.float32)
+    ref0_drift[iw_s_d:iw_e_d] = ref0[iw_s_d:iw_e_d]
     radius_boot = int(0.002 * SR)
     narrow      = int(0.0003 * SR)
     N_BOOT      = min(50, N_TMPL)
@@ -109,7 +116,7 @@ def main():
     for i in range(1, N_TMPL):
         s_,e_ = slices_probe[i]
         seg = probe_sig[s_:e_]
-        xc = correlate(seg, ref0, mode='full')
+        xc = correlate(seg, ref0_drift, mode='full')   # FM3: windowed ref
 
         if i < N_BOOT:
             lo = max(0, center_idx-radius_boot)
@@ -133,6 +140,14 @@ def main():
             ema_rate=(1-alpha_ema)*ema_rate+alpha_ema*(shift/i)
         elif i==N_BOOT:
             ema_rate = np.polyfit(np.arange(1,N_BOOT+1),shifts_tmpl[1:N_BOOT+1],1)[0]
+
+    # FM3 drift threshold guard: >0.5 μs/period → detection noise, zero it.
+    drift_rate_us = ema_rate * 1e6 / SR
+    if abs(drift_rate_us) > 0.5:
+        shifts_tmpl[:] = 0.0
+        print(f"  FM3 drift zeroed: {drift_rate_us:.2f} μs/period > 0.5 threshold")
+    else:
+        print(f"  FM3 drift kept: {drift_rate_us:.3f} μs/period")
 
     T_launch_acc = np.zeros(period_n, dtype=np.float64)
     T_return_acc = np.zeros(period_n, dtype=np.float64)
@@ -185,9 +200,8 @@ def main():
                 global_period += 1
                 continue
 
-            # Fine alignment: xcorr with ref0, ±2ms window around center_idx.
-            # Adaptive slicing can place the burst up to ~2ms from center_idx,
-            # so radius_boot (2ms) is needed; ±narrow (0.3ms) misses the peak.
+            # Fine alignment: full-period xcorr against ref0 (both burst windows).
+            # Using ref0_drift (windowed) here breaks return-window alignment.
             xc = correlate(period, ref0, mode='full')
             lo = max(0, center_idx - radius_boot)
             hi = min(len(xc), center_idx + radius_boot)
@@ -238,7 +252,7 @@ def main():
 
     # ── Step 4: plot ──────────────────────────────────────────────────────────
     # Write outputs to stubbs_pipeline_v1/ subdir (LS shape-fit results)
-    pipeline_dir = os.path.join(out_dir, 'stubbs_pipeline_v1')
+    pipeline_dir = os.path.join(out_dir, 'stubbs_pipeline_v2')
     os.makedirs(pipeline_dir, exist_ok=True)
     time_min = np.array(eval_idx) / rep / 60.0
 
@@ -247,18 +261,28 @@ def main():
                  f'σ={dt.std():.3f}μs → {dt.std()/10.3:.4f}°C/ping)',
                  fontweight='bold', fontsize=11)
 
-    # Full time series
-    ax = axes[0]
-    ax.plot(time_min, dt, '.', ms=1.2, alpha=0.3, color='k', label='Δτ per period')
-    # 1-min rolling mean
+    # Full time series — clean periods only, standard pipeline format
     from scipy.ndimage import uniform_filter1d
-    smooth_n = int(rep * 60)  # 1-min window
-    dt_smooth = uniform_filter1d(dt, size=smooth_n)
-    ax.plot(time_min, dt_smooth, '-', lw=1.5, color='C0',
-            label=f'1-min rolling mean')
-    ax.axhline(dt.mean(), color='C3', lw=1, ls='--', alpha=0.7)
+    good_plot = np.abs(dt) <= 5.0
+    n_out = int((~good_plot).sum())
+    dt_clean = np.where(good_plot, dt, np.nan)
+    sp_plot  = np.sqrt(sigma_l**2 + sigma_r**2)
+    sp_clean = np.where(good_plot, sp_plot, np.nan)
+    mean_c2  = float(np.nanmean(dt_clean)); std_c2 = float(np.nanstd(dt_clean))
+    ax = axes[0]
+    ax.errorbar(time_min, dt_clean, yerr=sp_clean,
+                fmt='o-', ms=1.5, lw=0.6, elinewidth=0.4, capsize=0,
+                mfc='none', mec='black', mew=0.5,
+                ecolor='black', color='#1a6aff', alpha=0.6, zorder=3,
+                label=f'Δτ per period'
+                      + (f'  ({n_out} outliers hidden)' if n_out else ''))
+    ax.axhline(mean_c2, color='navy', ls='--', lw=1.2, alpha=0.7,
+               label=f'mean = {mean_c2:.3f} μs')
+    ax.axhline(mean_c2 + std_c2, color='gray', ls=':', lw=1)
+    ax.axhline(mean_c2 - std_c2, color='gray', ls=':', lw=1,
+               label=f'σ = {std_c2:.3f} μs → {std_c2/10.3:.4f}°C/ping')
     ax.set_xlabel('Time (min)'); ax.set_ylabel('Δτ (μs)')
-    ax.set_title('Full time series')
+    ax.set_title('Full time series  (FM3 pipeline)')
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3, ls='--')
 
     # Histogram
