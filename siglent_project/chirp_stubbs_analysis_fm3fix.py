@@ -343,16 +343,35 @@ def detect_windows(period_data, fs, win_half_width_ms=WIN_HALF_WIDTH_MS,
     # Candidate: incident is BEFORE anchor (anchor is the reflected)
     cand_inc_idx, cand_inc_val = _search_peak(anchor_ms - tof_ms)
 
-    if cand_ref_val >= cand_inc_val and cand_ref_idx is not None:
+    # Amplitude guard (user fix): the mic is positioned for equal incident /
+    # reflected pickup, so the pairing peak must be ≥ MIN_PAIR_FRAC × anchor.
+    # Without this, a multipath at 5% of the anchor amplitude can "win" the
+    # ±TOF search, swapping incident↔reflected assignment and making the xcorr
+    # measure (multipath, real_incident) instead of (incident, reflected).
+    MIN_PAIR_FRAC = 0.40
+    anchor_val    = float(env_n[anchor_sample])
+    amp_threshold = MIN_PAIR_FRAC * anchor_val
+
+    cand_ref_ok = cand_ref_idx is not None and cand_ref_val >= amp_threshold
+    cand_inc_ok = cand_inc_idx is not None and cand_inc_val >= amp_threshold
+
+    if cand_ref_ok and (cand_ref_val >= cand_inc_val or not cand_inc_ok):
         # anchor = incident, cand_ref = reflected
         inc_sample = anchor_sample
         ref_sample = cand_ref_idx
-    elif cand_inc_idx is not None and cand_inc_val > 0:
+    elif cand_inc_ok:
         # anchor = reflected, cand_inc = incident
         inc_sample = cand_inc_idx
         ref_sample = anchor_sample
     else:
-        # Fallback: first-onset search + TOF
+        # No valid pairing found above amplitude threshold — fall back to
+        # onset-based search.  Log when the threshold rejected a candidate.
+        if cand_ref_idx is not None and cand_ref_val > 0 and not cand_ref_ok:
+            print(f"  FM3 amp guard: fwd candidate {cand_ref_val:.3f} < "
+                  f"{amp_threshold:.3f} ({MIN_PAIR_FRAC:.0%} × {anchor_val:.3f}) — rejected")
+        if cand_inc_idx is not None and cand_inc_val > 0 and not cand_inc_ok:
+            print(f"  FM3 amp guard: bwd candidate {cand_inc_val:.3f} < "
+                  f"{amp_threshold:.3f} ({MIN_PAIR_FRAC:.0%} × {anchor_val:.3f}) — rejected")
         threshold = 0.05
         gate_hi   = max(1, int(min(period_ms, 0.6 * tof_ms) / 1000 * fs))
         above     = env_n[:gate_hi] > threshold
@@ -468,7 +487,24 @@ def adaptive_slice_periods(data, fs, rep_rate, tof_us=5700.0,
     min_dist = max(1, min(period_samples // 3, int(tof_samples * 0.8)))
     peaks, props = find_peaks(env_n, height=amp_threshold, distance=min_dist)
 
-    # Pair peaks into (incident, reflected) by TOF separation
+    # Pair peaks into (incident, reflected) by TOF separation + amplitude guard.
+    #
+    # Amplitude guard: mic is positioned for roughly equal incident/reflected
+    # pickup, so the paired reflection must be within MIN_PAIR_FRAC–(1/MIN_PAIR_FRAC)
+    # of the candidate incident amplitude.
+    #
+    # Without this, a multipath at 5–20% of the main burst amplitude can form
+    # a "valid" pair with the real incident burst (which arrives ~TOF later and
+    # is 4–20× stronger), swapping the incident↔reflected assignment and making
+    # the xcorr measure (multipath, real_incident) instead of (incident, reflected).
+    # This was the root cause of the spurious ±50 000 μs outliers seen across ~20
+    # of the 45 ECM999 waveforms.
+    #
+    # When the (multipath, real_incident) pair is rejected, the loop finds
+    # (real_incident, real_reflected) on the next iteration.
+    MIN_PAIR_FRAC = 0.40   # reflected must be ≥ 40% of incident amplitude
+    MAX_PAIR_FRAC = 1.0 / MIN_PAIR_FRAC   # and ≤ 2.5× (catches swapped pairs)
+
     incident_samples = []
     used = set()
     for i, p in enumerate(peaks):
@@ -480,7 +516,15 @@ def adaptive_slice_periods(data, fs, rep_rate, tof_us=5700.0,
             if sep > tof_samples + tol_samples:
                 break
             if abs(sep - tof_samples) <= tol_samples:
-                # Found a pair: p=incident, peaks[j]=reflected
+                amp_p = float(env_n[p])
+                amp_j = float(env_n[peaks[j]])
+                ratio = amp_j / (amp_p + 1e-12)
+                if ratio < MIN_PAIR_FRAC or ratio > MAX_PAIR_FRAC:
+                    # Amplitude mismatch — likely multipath or swapped assignment.
+                    # Skip this candidate; the loop will try peaks[j] as anchor
+                    # on the next outer iteration.
+                    continue
+                # Valid pair: p=incident, peaks[j]=reflected
                 incident_samples.append(p)
                 used.add(i); used.add(j)
                 break
