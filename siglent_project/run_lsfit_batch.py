@@ -20,7 +20,7 @@ import chirp_stubbs_analysis as st
 
 BASE    = os.path.dirname(os.path.abspath(__file__))
 SDG_SR, SDG_MAX = 400000, 16384
-SUBDIR  = 'stubbs_pipeline_lsfit_v1'
+SUBDIR  = 'stubbs_pipeline_lsfit_v2'   # v2: FM3 fixes (amplitude guard, drift threshold, windowed xcorr)
 N_TMPL  = 100
 
 
@@ -62,7 +62,14 @@ SESSIONS = [
     # ── V2: new burst H(f), recentered bands, Jul 15 2026 ────────────────────
     ('recordings/20260715_161527_chirp_sweep_V2_newHf',               CHIRP_CFG_V2),
     ('recordings/20260715_162235_alpha_sweep_v2_newHf',               None),   # auto
+    # ── ECM999 full sweep, Jul 16 2026 — session dir auto-detected below ─────
 ]
+
+import glob as _glob
+_ecm999 = sorted(_glob.glob(os.path.join(BASE,
+    'recordings/*_ecm999_full_sweep_v2_ecmHf')))
+for _s in _ecm999:
+    SESSIONS.append((os.path.relpath(_s, BASE), CHIRP_CFG_V2))
 
 
 def dur_from_name(name):
@@ -118,16 +125,21 @@ def save_3panel(result, wf_name, rep_rate, out_path):
     ax.set_title('Example Cross-Correlations (last eval period)')
     ax.legend(fontsize=8);  ax.grid(True, alpha=0.3)
 
-    # Panel 3: Δτ time series — black points + connecting line + LS error bars
+    # Panel 3: Δτ time series — clean (|Δτ|≤5μs) periods only; outliers hidden
     ax = axes[2]
-    t_sec   = (np.arange(n_eval) + n_tmpl) / rep_rate
-    mean_dt = float(np.mean(dts))
-    std_dt  = float(np.std(dts))
-    med_sig = float(np.median(sigs * 1e3))
-    ax.errorbar(t_sec, dts, yerr=sigs,
+    t_sec    = (np.arange(n_eval) + n_tmpl) / rep_rate
+    clean    = np.abs(dts) <= 5.0
+    dts_plot = np.where(clean, dts,  np.nan)
+    sigs_plot= np.where(clean, sigs, np.nan)
+    n_out    = int((~clean).sum())
+    mean_dt  = float(np.nanmean(dts_plot))
+    std_dt   = float(np.nanstd(dts_plot))
+    med_sig  = float(np.median(sigs * 1e3))
+    ax.errorbar(t_sec, dts_plot, yerr=sigs_plot,
                 fmt='o-', ms=3, lw=1.0, elinewidth=0.9, capsize=2,
                 mfc='none', mec='k', mew=0.7, ecolor='black', alpha=0.85,
-                label=f'Δτ per period')
+                label=f'Δτ per period'
+                      + (f'  ({n_out} outlier{"s" if n_out!=1 else ""} hidden)' if n_out else ''))
     ax.axhline(mean_dt, color='b', ls='--', lw=1.5,
                label=f'mean = {mean_dt:.3f} μs')
     ax.axhline(mean_dt + std_dt, color='gray', ls=':', lw=1)

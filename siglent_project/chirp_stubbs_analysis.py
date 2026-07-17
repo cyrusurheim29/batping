@@ -343,16 +343,35 @@ def detect_windows(period_data, fs, win_half_width_ms=WIN_HALF_WIDTH_MS,
     # Candidate: incident is BEFORE anchor (anchor is the reflected)
     cand_inc_idx, cand_inc_val = _search_peak(anchor_ms - tof_ms)
 
-    if cand_ref_val >= cand_inc_val and cand_ref_idx is not None:
+    # Amplitude guard (user fix): the mic is positioned for equal incident /
+    # reflected pickup, so the pairing peak must be ≥ MIN_PAIR_FRAC × anchor.
+    # Without this, a multipath at 5% of the anchor amplitude can "win" the
+    # ±TOF search, swapping incident↔reflected assignment and making the xcorr
+    # measure (multipath, real_incident) instead of (incident, reflected).
+    MIN_PAIR_FRAC = 0.40
+    anchor_val    = float(env_n[anchor_sample])
+    amp_threshold = MIN_PAIR_FRAC * anchor_val
+
+    cand_ref_ok = cand_ref_idx is not None and cand_ref_val >= amp_threshold
+    cand_inc_ok = cand_inc_idx is not None and cand_inc_val >= amp_threshold
+
+    if cand_ref_ok and (cand_ref_val >= cand_inc_val or not cand_inc_ok):
         # anchor = incident, cand_ref = reflected
         inc_sample = anchor_sample
         ref_sample = cand_ref_idx
-    elif cand_inc_idx is not None and cand_inc_val > 0:
+    elif cand_inc_ok:
         # anchor = reflected, cand_inc = incident
         inc_sample = cand_inc_idx
         ref_sample = anchor_sample
     else:
-        # Fallback: first-onset search + TOF
+        # No valid pairing found above amplitude threshold — fall back to
+        # onset-based search.  Log when the threshold rejected a candidate.
+        if cand_ref_idx is not None and cand_ref_val > 0 and not cand_ref_ok:
+            print(f"  FM3 amp guard: fwd candidate {cand_ref_val:.3f} < "
+                  f"{amp_threshold:.3f} ({MIN_PAIR_FRAC:.0%} × {anchor_val:.3f}) — rejected")
+        if cand_inc_idx is not None and cand_inc_val > 0 and not cand_inc_ok:
+            print(f"  FM3 amp guard: bwd candidate {cand_inc_val:.3f} < "
+                  f"{amp_threshold:.3f} ({MIN_PAIR_FRAC:.0%} × {anchor_val:.3f}) — rejected")
         threshold = 0.05
         gate_hi   = max(1, int(min(period_ms, 0.6 * tof_ms) / 1000 * fs))
         above     = env_n[:gate_hi] > threshold
@@ -369,6 +388,19 @@ def detect_windows(period_data, fs, win_half_width_ms=WIN_HALF_WIDTH_MS,
     hw = win_half_width_ms
     inc_win = (max(0.0, inc_center_ms - hw), min(period_ms, inc_center_ms + hw))
     ref_win = (max(0.0, ref_center_ms - hw), min(period_ms, ref_center_ms + hw))
+
+    # FM3b fix: enforce minimum gap between incident window end and return window start.
+    # ring_down_margin ≈ 3×Q/(π×f₀) ≈ 3×0.18 ms = 0.55 ms.  Without this, the return
+    # window can start inside the incident burst's ring-down, contaminating T_return
+    # with T_launch energy and causing both xcorr peaks to land at the same wrong lag.
+    ring_down_margin_ms = 0.3   # reduced from 0.6: 0.6 was clipping reflected burst
+                                # onset for tight-geometry waveforms (e.g. bw_20kHz).
+                                # 0.3 ms still clears the Q/(π×f₀)≈0.18 ms ring-down.
+    min_ref_start = inc_win[1] + ring_down_margin_ms
+    if ref_win[0] < min_ref_start:
+        ref_win = (min(min_ref_start, ref_center_ms), ref_win[1])
+        print(f"  FM3b: return window start advanced to {ref_win[0]:.2f} ms "
+              f"(ring-down separation enforced)")
 
     print(f"  Detected incident  peak at {inc_center_ms:.2f} ms  "
           f"→ window [{inc_win[0]:.2f}, {inc_win[1]:.2f}] ms")
@@ -415,6 +447,12 @@ def slice_periods(data, fs, rep_rate, amp_cutoff=0.25):
 def adaptive_slice_periods(data, fs, rep_rate, tof_us=5700.0,
                            pre_inc_ms=2.0, amp_threshold=0.15):
     """
+    FM3a note: pre_inc_ms kept at 2.0 ms (original value).
+    Increasing it made incident window wider → FM3b guard clipped reflected
+    burst onset for some good waveforms → σ regressions.
+    The drift-guard fix (zeroing false shifts_frac) is the main improvement;
+    onset clipping for a0.6_lg_4ms is a secondary issue addressed separately.
+
     Adaptive period slicer: finds actual incident peaks in the continuous
     recording rather than using fixed uniform cuts.
 
@@ -449,7 +487,24 @@ def adaptive_slice_periods(data, fs, rep_rate, tof_us=5700.0,
     min_dist = max(1, min(period_samples // 3, int(tof_samples * 0.8)))
     peaks, props = find_peaks(env_n, height=amp_threshold, distance=min_dist)
 
-    # Pair peaks into (incident, reflected) by TOF separation
+    # Pair peaks into (incident, reflected) by TOF separation + amplitude guard.
+    #
+    # Amplitude guard: mic is positioned for roughly equal incident/reflected
+    # pickup, so the paired reflection must be within MIN_PAIR_FRAC–(1/MIN_PAIR_FRAC)
+    # of the candidate incident amplitude.
+    #
+    # Without this, a multipath at 5–20% of the main burst amplitude can form
+    # a "valid" pair with the real incident burst (which arrives ~TOF later and
+    # is 4–20× stronger), swapping the incident↔reflected assignment and making
+    # the xcorr measure (multipath, real_incident) instead of (incident, reflected).
+    # This was the root cause of the spurious ±50 000 μs outliers seen across ~20
+    # of the 45 ECM999 waveforms.
+    #
+    # When the (multipath, real_incident) pair is rejected, the loop finds
+    # (real_incident, real_reflected) on the next iteration.
+    MIN_PAIR_FRAC = 0.40   # reflected must be ≥ 40% of incident amplitude
+    MAX_PAIR_FRAC = 1.0 / MIN_PAIR_FRAC   # and ≤ 2.5× (catches swapped pairs)
+
     incident_samples = []
     used = set()
     for i, p in enumerate(peaks):
@@ -461,7 +516,15 @@ def adaptive_slice_periods(data, fs, rep_rate, tof_us=5700.0,
             if sep > tof_samples + tol_samples:
                 break
             if abs(sep - tof_samples) <= tol_samples:
-                # Found a pair: p=incident, peaks[j]=reflected
+                amp_p = float(env_n[p])
+                amp_j = float(env_n[peaks[j]])
+                ratio = amp_j / (amp_p + 1e-12)
+                if ratio < MIN_PAIR_FRAC or ratio > MAX_PAIR_FRAC:
+                    # Amplitude mismatch — likely multipath or swapped assignment.
+                    # Skip this candidate; the loop will try peaks[j] as anchor
+                    # on the next outer iteration.
+                    continue
+                # Valid pair: p=incident, peaks[j]=reflected
                 incident_samples.append(p)
                 used.add(i); used.add(j)
                 break
@@ -602,6 +665,16 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
     center_idx = period_idx - 1          # lag=0 index in mode='full' correlation
     shifts_frac = np.zeros(n_periods)
 
+    # FM3 drift fix: build a windowed reference that is zero outside the incident
+    # burst window.  Full-period xcorr is dominated by broadband noise for
+    # low-SNR waveforms (e.g. ECM999 a0.6_lg_4ms: T_launch~0.09), giving a
+    # false drift of ±6 μs/period.  Restricting to the burst window ensures
+    # SNR ≫ 1 regardless of waveform amplitude.
+    iw_s_d = int(incident_win_ms[0] / 1000 * fs)
+    iw_e_d = min(int(incident_win_ms[1] / 1000 * fs), period_idx)
+    ref0_drift = np.zeros(period_idx)
+    ref0_drift[iw_s_d:iw_e_d] = ref0_full[iw_s_d:iw_e_d]
+
     radius = int(0.002 * fs)             # ±2 ms bootstrap search window
     N_BOOT = 50
     narrow = int(0.0003 * fs)            # ±300 μs adaptive search window
@@ -621,11 +694,11 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
                 return (lp + dl + lo) - center_idx
         return float(lp + lo - center_idx)
 
-    # Phase 1: bootstrap — xcorr full periods (burst always in frame)
+    # Phase 1: bootstrap — windowed xcorr (burst region only)
     boot_end = min(N_BOOT + 1, n_periods)
     for i in range(1, boot_end):
         period_i = sig[slices[i][0]:slices[i][1]]
-        xc = correlate(period_i, ref0_full, mode='full')
+        xc = correlate(period_i, ref0_drift, mode='full')
         lo = max(0, center_idx - radius)
         hi = min(len(xc), center_idx + radius)
         shifts_frac[i] = find_shift(xc, lo, hi)
@@ -633,7 +706,7 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
     boot_idx  = np.arange(1, boot_end, dtype=float)
     drift_rate = np.polyfit(boot_idx, shifts_frac[1:boot_end], 1)[0]
 
-    # Phase 2: adaptive EMA — still xcorr full periods, narrow search window
+    # Phase 2: adaptive EMA — windowed xcorr, narrow search window
     EMA_TAU  = 200.0
     ema_rate = drift_rate
     alpha_ema = 1.0 / EMA_TAU
@@ -642,9 +715,15 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
         predicted   = ema_rate * i
         pred_center = center_idx + int(round(predicted))
         period_i    = sig[slices[i][0]:slices[i][1]]
-        xc = correlate(period_i, ref0_full, mode='full')
+        xc = correlate(period_i, ref0_drift, mode='full')
         lo = max(0, pred_center - narrow)
         hi = min(len(xc), pred_center + narrow)
+        if lo >= hi:                       # pred_center out of bounds — fallback
+            lo = max(0, center_idx - narrow)
+            hi = min(len(xc), center_idx + narrow)
+        if lo >= hi:                       # xcorr too short — skip
+            shifts_frac[i] = shifts_frac[i - 1] if i > 0 else 0.0
+            continue
         shifts_frac[i] = find_shift(xc, lo, hi)
         inst_rate = shifts_frac[i] / i
         ema_rate  = (1 - alpha_ema) * ema_rate + alpha_ema * inst_rate
@@ -653,6 +732,27 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
     print(f"  Clock drift: rate={ema_rate*1e6/fs:.3f} μs/period  "
           f"total={drift_us[-1]:.1f} μs  "
           f"(adaptive + EMA rate update τ={EMA_TAU:.0f}p)")
+
+    # FM3 drift guard: adaptive_slice_periods anchors every period to its
+    # detected incident peak, so true residual drift should be tiny
+    # (< ~0.5 μs/period from genuine SDG/PicoScope clock mismatch).
+    # Large EMA rates (±3–7 μs/period seen for ECM999 a0.6 waveforms) are
+    # detection noise.  Applying them over 1000+ periods accumulates to ±5 ms,
+    # displacing bursts outside windows and biasing templates vs eval periods.
+    # Threshold: if |rate| > 0.5 μs/period, zero shifts_frac entirely.
+    # Genuine small drifts (UltraMic, ECM999 good waveforms) are ≤ 0.1 μs/period
+    # and are kept.
+    _DRIFT_THRESHOLD_US_PER_PERIOD = 0.5
+    drift_rate_us = ema_rate * 1e6 / fs
+    if abs(drift_rate_us) > _DRIFT_THRESHOLD_US_PER_PERIOD:
+        shifts_frac_max_us = float(np.max(np.abs(shifts_frac))) * 1e6 / fs
+        shifts_frac[:] = 0.0
+        print(f"  FM3 drift zeroed: EMA rate {drift_rate_us:.2f} μs/period > "
+              f"{_DRIFT_THRESHOLD_US_PER_PERIOD} threshold (max was "
+              f"{shifts_frac_max_us:.0f} μs — detection noise, slicer handles alignment)")
+    else:
+        print(f"  FM3 drift kept: EMA rate {drift_rate_us:.3f} μs/period "
+              f"≤ {_DRIFT_THRESHOLD_US_PER_PERIOD} threshold (genuine small drift)")
 
     # Build templates: drift-correct each period (linear+fft), then mask
     T_launch_acc = np.zeros(period_idx)
