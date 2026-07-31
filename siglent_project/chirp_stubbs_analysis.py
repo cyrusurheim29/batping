@@ -244,6 +244,111 @@ def xcorr_lag_carrier_phase(signal_seg, template, fs,
     return lag_us, sigma_us, float(amplitude[coarse]), snr_amp
 
 
+def xcorr_lag_shape_fit_dechirp(signal_seg, template, fs,
+                                 f_lo_hz, chirp_rate_hz_per_s,
+                                 R_auto=None, window_half_us=200.0,
+                                 search_radius_us=700.0,
+                                 coarse_lag_us=None):
+    """
+    Dechirped LS shape-fit — works at ANY lag position (Category 1 fix).
+
+    For LFM chirps, the CCF is itself a chirp: xc(τ) ≈ sinc(BW·τ) × exp(j·chirp_phase(τ)).
+    Multiplying by exp(-j·chirp_phase(τ)) dechirps it into an approximately real sinc
+    regardless of where the main lobe sits on the lag axis.  The same dechirp applied to
+    R_auto gives a real sinc centred at lag=0.  The LS fit of Re(xc_d) vs Re(R_auto_d)
+    is then well-conditioned at any lag — eliminating the R_auto model-mismatch that
+    causes the original shape-fit to fail for Category 1 shifted CCFs.
+
+    After dechirp: Re(xc_d) ≈ A · sinc(BW·ξ),  Re(R_auto_d) ≈ sinc(BW·ξ)
+    → LS recovers sub-sample δ = -B/A correctly at any peak position.
+
+    Parameters
+    ----------
+    f_lo_hz             : chirp start frequency (Hz)  — 38450 for a0.3_sm_4ms
+    chirp_rate_hz_per_s : BW/T (Hz/s)                — 1.5e6 for a0.3_sm_4ms (6kHz/4ms)
+    """
+    xc = correlate(signal_seg, template, mode='full')
+    if R_auto is None:
+        R_auto = correlate(template, template, mode='full')
+    center = len(template) - 1
+
+    # Analytic signals — needed so that dechirp removes the carrier cleanly.
+    # For real CCF xc(τ) ≈ A·sinc(BW·τ)·cos(chirp_phase(τ)), the Hilbert transform
+    # gives xc_anal ≈ A·sinc(BW·τ)·exp(j·chirp_phase(τ)).  Multiplying by
+    # D = exp(-j·chirp_phase) then yields ≈ A·sinc — a real sinc regardless of lag.
+    # Using xc.astype(complex) instead would leave a double-frequency artifact.
+    xc_anal  = hilbert(xc)
+    Ra_anal  = hilbert(R_auto)
+
+    # Build dechirp factors D(k) = exp(-j2π(f_lo·k/fs + rate·(k/fs)²/2))
+    k_arr = np.arange(len(xc)) - center          # lag in samples
+    lags_s = k_arr / fs
+    chirp_phase = 2*np.pi*(f_lo_hz*lags_s + chirp_rate_hz_per_s*lags_s**2/2)
+    D = np.exp(-1j * chirp_phase)
+
+    xc_d  = xc_anal * D                        # ≈ A·sinc (complex, constant phase)
+    Rau_d = (Ra_anal * D).real                  # ≈ sinc envelope of R_auto (real)
+
+    # Coarse peak from analytic envelope
+    env = np.abs(xc_anal)
+    if coarse_lag_us is not None:
+        coarse = center + int(round(coarse_lag_us * fs / 1e6))
+        coarse = max(0, min(coarse, len(xc)-1))
+    else:
+        radius = int(search_radius_us * fs / 1e6)
+        lo = max(0, center - radius)
+        hi = min(len(xc)-1, center + radius)
+        coarse = lo + int(np.argmax(env[lo:hi+1]))
+
+    # Rotate xc_d so the peak is real positive — removes residual carrier phase
+    phase_at_coarse = np.angle(xc_d[coarse])
+    rotation = np.exp(-1j * phase_at_coarse)
+    xc_d_rot = xc_d * rotation                  # peak is now real positive
+
+    # LS fit window
+    W = max(int(window_half_us * fs / 1e6), 5)
+    k_all = np.arange(-W, W+1, dtype=int)
+    valid = (
+        (coarse + k_all >= 0) & (coarse + k_all < len(xc)) &
+        (center + k_all >= 1) & (center + k_all < len(Rau_d)-1)
+    )
+    k = k_all[valid]
+    if len(k) < 5:
+        return xcorr_lag_us(signal_seg, template, fs, search_radius_us)
+
+    xc_fit = xc_d_rot[coarse + k].real         # ≈ A·sinc(BW·k/fs)
+    ra     = Rau_d[center + k]                  # ≈ sinc(BW·k/fs)
+    ra_d   = (Rau_d[center + k + 1] - Rau_d[center + k - 1]) / 2.0
+
+    # Weight by dechirped R_auto envelope
+    w = Rau_d[center + k].copy()
+    w = np.maximum(w, 0.0); w /= (w.max() + 1e-12)
+
+    Phi   = np.column_stack([ra, ra_d])
+    Phi_w = Phi * w[:, None]; y_w = xc_fit * w
+
+    AB, _, _, _ = np.linalg.lstsq(Phi_w, y_w, rcond=None)
+    A, B = float(AB[0]), float(AB[1])
+
+    if abs(A) < 1e-10:
+        return float(coarse - center) / fs * 1e6, 1e6/fs, 0.0, np.nan
+
+    delta_samp = -B / A
+    lag_us = (coarse - center + delta_samp) / fs * 1e6
+
+    residuals    = xc_fit - Phi @ AB
+    sigma2_noise = float(np.dot(residuals, residuals)) / max(1, len(xc_fit)-2)
+    try:
+        cov = sigma2_noise * np.linalg.inv(Phi.T @ Phi)
+    except np.linalg.LinAlgError:
+        cov = sigma2_noise * np.linalg.pinv(Phi.T @ Phi)
+    sA2 = cov[0,0]; sB2 = cov[1,1]; cAB = cov[0,1]
+    var_delta = (sB2 + delta_samp**2*sA2 - 2*delta_samp*cAB) / (A**2)
+    sigma_us  = float(np.sqrt(max(0.0, var_delta))) * 1e6 / fs
+    rms_resid = float(np.sqrt(sigma2_noise)) / (abs(A) + 1e-12)
+    return lag_us, sigma_us, float(A), rms_resid
+
+
 def xcorr_lag_shape_fit(signal_seg, template, fs,
                         R_auto=None, window_half_us=200.0,
                         search_radius_us=200.0,
@@ -768,7 +873,8 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
             win_half_width_ms=WIN_HALF_WIDTH_MS, output_dir=OUTPUT_DIR,
             save_plot=True, _return_internals=False,
             _plot_parabola=False, _pipeline_dir=None,
-            _search_radius_us=200.0):
+            _search_radius_us=200.0,
+            _dechirp_f_lo=None, _dechirp_rate=None):
     """
     Run Stubbs dual-template analysis on a WAV file.
     Returns dict with templates, per-period lags, and precision metrics.
@@ -982,10 +1088,22 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
                                        search_radius_us=_search_radius_us)
         τr, xc_r, env_r, σr = xcorr_lag_us(ref_m, T_return, fs,
                                              search_radius_us=_search_radius_us)
-        τl_sf, σl_sf, _, _ = xcorr_lag_shape_fit(inc_m, T_launch, fs, R_auto=R_auto_L,
-                                                   coarse_lag_us=τl)
-        τr_sf, σr_sf, _, _ = xcorr_lag_shape_fit(ref_m, T_return, fs, R_auto=R_auto_R,
-                                                   coarse_lag_us=τr)
+        if _dechirp_f_lo is not None and _dechirp_rate is not None:
+            τl_sf, σl_sf, _, _ = xcorr_lag_shape_fit_dechirp(
+                inc_m, T_launch, fs,
+                f_lo_hz=_dechirp_f_lo, chirp_rate_hz_per_s=_dechirp_rate,
+                R_auto=R_auto_L, search_radius_us=_search_radius_us,
+                coarse_lag_us=τl)
+            τr_sf, σr_sf, _, _ = xcorr_lag_shape_fit_dechirp(
+                ref_m, T_return, fs,
+                f_lo_hz=_dechirp_f_lo, chirp_rate_hz_per_s=_dechirp_rate,
+                R_auto=R_auto_R, search_radius_us=_search_radius_us,
+                coarse_lag_us=τr)
+        else:
+            τl_sf, σl_sf, _, _ = xcorr_lag_shape_fit(inc_m, T_launch, fs, R_auto=R_auto_L,
+                                                       coarse_lag_us=τl)
+            τr_sf, σr_sf, _, _ = xcorr_lag_shape_fit(ref_m, T_return, fs, R_auto=R_auto_R,
+                                                       coarse_lag_us=τr)
         tau_launch_list.append(τl);     tau_return_list.append(τr)
         sigma_launch_list.append(σl);   sigma_return_list.append(σr)
         tau_launch_sf_list.append(τl_sf); tau_return_sf_list.append(τr_sf)
@@ -1138,8 +1256,12 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
     plt.tight_layout()
     stem = os.path.splitext(os.path.basename(wav_path))[0]
     # v2: parabola-seeded shape-fit (eliminates carrier-cycle slips)
-    _default_pipeline = 'stubbs_pipeline_vtest' if _search_radius_us != 200.0 \
-        else 'stubbs_pipeline_v3'
+    if _dechirp_f_lo is not None and _dechirp_rate is not None:
+        _default_pipeline = 'stubbs_pipeline_vtest_dechirp'
+    elif _search_radius_us != 200.0:
+        _default_pipeline = 'stubbs_pipeline_vtest'
+    else:
+        _default_pipeline = 'stubbs_pipeline_v3'
     pipeline_dir = _pipeline_dir if _pipeline_dir is not None else \
         os.path.join(os.path.dirname(wav_path), '..', _default_pipeline)
     pipeline_dir = os.path.normpath(pipeline_dir)
