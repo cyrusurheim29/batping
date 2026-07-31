@@ -43,8 +43,9 @@ WAV_FILE = None          # Set to path or pass to analyze(); prompts if None
 REP_RATE = 40.0
 
 # HP filter to remove 25 kHz lab interference
-HP_CUTOFF = 30000
-HP_ORDER  = 8
+HP_CUTOFF  = 28000   # bandpass lower edge (rejects 25 kHz secondary resonance + below)
+BP_HI_CUTOFF = 65000 # bandpass upper edge (rejects broadband noise above piezo band)
+HP_ORDER   = 8
 
 # Number of periods to co-add into templates
 N_TEMPLATE = 100  # 100 periods at 40 Hz = 2.5 s of recording for template build
@@ -67,7 +68,10 @@ OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 # ── Core functions ─────────────────────────────────────────────────────────────
 
 def hp_filter(sig, fs):
-    sos = butter(HP_ORDER, HP_CUTOFF / (fs / 2), btype='high', output='sos')
+    """Bandpass 28–65 kHz: rejects sub-piezo noise and broadband high-freq noise."""
+    nyq = fs / 2
+    sos = butter(HP_ORDER, [HP_CUTOFF / nyq, BP_HI_CUTOFF / nyq],
+                 btype='band', output='sos')
     return sosfiltfilt(sos, sig)
 
 
@@ -168,9 +172,82 @@ def xcorr_lag_us(signal_seg, template, fs, search_radius_us=200.0):
     return lag_us, xc, env, sigma_us
 
 
+def xcorr_lag_carrier_phase(signal_seg, template, fs,
+                             search_radius_us=300.0, f_carrier_hz=41000.0,
+                             coarse_lag_us=None):
+    """
+    Sub-sample lag via carrier-phase extraction.  Designed for narrowband chirps
+    (BW << f_carrier) where the Hilbert envelope is nearly flat within the search
+    window and xcorr_lag_us 'defaults to 0' (argmax lands on the noise-dominated
+    flat envelope rather than the true peak).
+
+    The CCF of a linear FM chirp is:
+        R(τ) ≈ A × sinc(BW × τ) × exp(j 2π f_c τ)
+
+    Coarse estimate — envelope-free, works for any BW:
+        τ_true ≈ −∠( Σ_τ R(τ) × exp(−j 2π f_c τ/fs) × |R(τ)| ) / (2π f_c/fs)
+
+        Detrending the carrier from each CCF sample and taking the amplitude-
+        weighted complex sum gives the mean phase offset ≡ −2π f_c τ_true/fs,
+        regardless of how flat the envelope is.  No argmax needed.
+
+    Fine correction — single-sample carrier phase:
+        Once τ_coarse is known (within ±T_c/2 of the truth), the carrier phase
+        at that sample gives a sub-cycle residual:
+        δ = −∠(R_analytic[τ_coarse]) / (2π f_c/fs)   mod ±T_c/2
+
+    Cramér-Rao bound:  σ ≈ T_carrier / (2π × SNR_amplitude)
+    At 41 kHz, SNR=100 → σ ≈ 39 ns;  SNR=1000 → σ ≈ 3.9 ns.
+    """
+    xc = correlate(signal_seg, template, mode='full')
+    center    = len(template) - 1
+    xc_anal   = hilbert(xc)
+    amplitude = np.abs(xc_anal)
+
+    radius = int(search_radius_us * fs / 1e6)
+    lo = max(0, center - radius)
+    hi = min(len(xc) - 1, center + radius)
+
+    T_c_samp    = fs / f_carrier_hz
+    from_slope  = 2.0 * np.pi * f_carrier_hz / fs   # rad / sample
+
+    if coarse_lag_us is not None:
+        coarse = int(round(center + coarse_lag_us * fs / 1e6))
+        coarse = max(lo, min(hi, coarse))
+    else:
+        # Carrier-detrended weighted complex sum — works even for flat envelopes
+        lags      = np.arange(lo, hi + 1, dtype=float)
+        detrended = xc_anal[lo:hi + 1] * np.exp(-1j * from_slope * (lags - center))
+        weights   = amplitude[lo:hi + 1]
+        wsum      = float(np.sum(weights))
+        if wsum < 1e-12:
+            return 0.0, 1e6 / fs, 0.0, 0.0
+        weighted_mean_phase = np.angle(np.dot(weights, detrended) / wsum)
+        coarse_frac = -weighted_mean_phase / from_slope
+        coarse = int(round(center + coarse_frac))
+        coarse = max(lo, min(hi, coarse))
+
+    # Fine correction: carrier phase at the coarse sample → sub-cycle residual
+    phase_at_coarse = float(np.angle(xc_anal[coarse]))
+    delta_samp = -phase_at_coarse / (2.0 * np.pi) * T_c_samp
+    delta_samp = ((delta_samp + T_c_samp / 2) % T_c_samp) - T_c_samp / 2
+
+    lag_us = (coarse - center + delta_samp) / fs * 1e6
+
+    # Uncertainty
+    noise_lo = max(0, center - int(0.020 * fs))
+    noise_hi = max(1, center - int(0.015 * fs))
+    sigma_noise = float(np.sqrt(np.mean(amplitude[noise_lo:noise_hi] ** 2))) + 1e-12
+    snr_amp     = float(amplitude[coarse]) / sigma_noise
+    sigma_us    = (T_c_samp / (2.0 * np.pi * snr_amp)) / fs * 1e6
+
+    return lag_us, sigma_us, float(amplitude[coarse]), snr_amp
+
+
 def xcorr_lag_shape_fit(signal_seg, template, fs,
                         R_auto=None, window_half_us=200.0,
-                        search_radius_us=200.0):
+                        search_radius_us=200.0,
+                        coarse_lag_us=None):
     """
     Estimate lag by fitting the measured CCF to the template autocorrelation shape.
 
@@ -211,12 +288,20 @@ def xcorr_lag_shape_fit(signal_seg, template, fs,
 
     center = len(template) - 1          # lag = 0 index (same for xc and R_auto)
 
-    # Coarse peak: argmax of Hilbert envelope in search window
-    env    = np.abs(hilbert(xc))
-    radius = int(search_radius_us * fs / 1e6)
-    lo     = max(0, center - radius)
-    hi     = min(len(xc) - 1, center + radius)
-    coarse = lo + int(np.argmax(env[lo:hi + 1]))
+    # Coarse peak: either from caller (parabola seed) or envelope argmax.
+    # Passing coarse_lag_us eliminates carrier-cycle slips: the parabola estimator
+    # (xcorr_lag_us) is immune to carrier ambiguity because it operates on the
+    # smoothed Hilbert envelope with a tight search radius; seeding the shape-fit
+    # from it means the LS window is always centred on the correct peak.
+    if coarse_lag_us is not None:
+        coarse = center + int(round(coarse_lag_us * fs / 1e6))
+        coarse = max(0, min(coarse, len(xc) - 1))
+    else:
+        env    = np.abs(hilbert(xc))
+        radius = int(search_radius_us * fs / 1e6)
+        lo     = max(0, center - radius)
+        hi     = min(len(xc) - 1, center + radius)
+        coarse = lo + int(np.argmax(env[lo:hi + 1]))
 
     # Window of integer sample offsets around coarse peak
     W      = max(int(window_half_us * fs / 1e6), 5)
@@ -274,46 +359,83 @@ def xcorr_lag_shape_fit(signal_seg, template, fs,
     return lag_us, sigma_us, float(A), rms_resid
 
 
+def learn_burst_extent(period_data, fs, peak_sample,
+                       threshold_db=-20.0, margin_ms=0.3):
+    """
+    Infer burst onset and offset from the Hilbert envelope of per0.
+
+    Uses a 0.5 ms smoothed envelope so individual carrier-oscillation dips in
+    the raw Hilbert envelope don't terminate the window prematurely — a common
+    failure for upchirps driving resonant piezos where the envelope has ripple
+    from dispersive ring-up/down.
+
+    threshold_db : level below peak treated as noise boundary (default -20 dB = 10%).
+    margin_ms    : safety margin added outside the learned extent (ms).
+    """
+    env_raw = np.abs(hilbert(period_data))
+    n       = len(period_data)
+    t_ms_arr  = np.arange(n) / fs * 1000.0
+    period_ms = t_ms_arr[-1]
+
+    # Smooth envelope: 0.5 ms moving average suppresses carrier ripple (~40 cycles)
+    smooth_n = max(3, int(0.0005 * fs))
+    env      = np.convolve(env_raw, np.ones(smooth_n) / smooth_n, mode='same')
+
+    # Noise floor: RMS of first 0.5 ms (pre-burst silence with pre_inc_ms=4ms)
+    noise_n   = max(2, min(int(0.0005 * fs), n // 10))
+    noise_rms = float(np.sqrt(np.mean(env[:noise_n] ** 2))) + 1e-12
+
+    peak_amp  = float(env[min(peak_sample, n - 1)])
+    threshold = max(noise_rms * 10.0,
+                    peak_amp * (10.0 ** (threshold_db / 20.0)))
+
+    # Onset: walk backward from peak until below threshold
+    onset_samp = 0
+    for k in range(min(peak_sample, n - 1), -1, -1):
+        if env[k] < threshold:
+            onset_samp = k
+            break
+
+    # Offset: walk forward from peak until below threshold
+    offset_samp = n - 1
+    for k in range(min(peak_sample, n - 1), n):
+        if env[k] < threshold:
+            offset_samp = k
+            break
+
+    onset_ms  = max(0.0,        t_ms_arr[onset_samp]  - margin_ms)
+    offset_ms = min(period_ms,  t_ms_arr[offset_samp] + margin_ms)
+
+    return onset_ms, offset_ms
+
+
 def detect_windows(period_data, fs, win_half_width_ms=WIN_HALF_WIDTH_MS,
-                   tof_us=5700.0):
+                   tof_us=5700.0, tol_ms=2.0):
     """
     Detect incident and reflection windows within a single period.
 
-    Strategy (robust to room echoes):
-      1. Incident = highest peak in the early part of the period
-         (first tof_ms from period start) — the direct-path pulse always
-         arrives before any round-trip reflection can.
-      2. Reflected = highest peak within [incident + tof_ms ± 2ms].
-         This prevents room echoes (which arrive later) from being mistaken
-         for the direct reflection.
-      3. Set windows of ±win_half_width_ms around each detected center.
+    Strategy: data-driven, no hard-coded TOF prior.
+      1. Find anchor = global envelope max in period interior.
+      2. Learn anchor burst extent via learn_burst_extent → exclusion zone.
+      3. Find second-largest peak ANYWHERE outside that zone (full-interior
+         search) — no tof_us constraint.  Amplitude guard (≥40% of anchor)
+         rejects weak multipath.
+      4. earlier peak = incident, later = reflected.
+      5. Learn each burst's window via learn_burst_extent.
 
-    tof_us: approximate expected TOF in μs (default 5700 = 2m bench path).
+    tof_us is kept for backward compatibility but is no longer used in the
+    primary search path.  It is only used in the fallback (step 3 failure).
     """
-    env = np.abs(hilbert(period_data))
-    env_n = env / np.max(env)
+    env_raw = np.abs(hilbert(period_data))
+    # Smooth envelope: 0.5 ms moving average removes carrier ripple that creates
+    # false peaks in the raw Hilbert envelope (the real failure mode here).
+    smooth_n  = max(3, int(0.0005 * fs))
+    env_sm    = np.convolve(env_raw, np.ones(smooth_n) / smooth_n, mode='same')
+    env_n     = env_sm / (np.max(env_sm) + 1e-12)
     t_ms = np.arange(len(period_data)) / fs * 1000
     period_ms = len(period_data) / fs * 1000
-    tof_ms = tof_us / 1000.0
-    tol_ms = 2.0   # ±2ms tolerance around expected TOF
 
-    # Robust two-peak detection — works regardless of which peak is stronger.
-    #
-    # Strategy: find the two best peaks anywhere in the period whose separation
-    # is close to tof_ms (within ±tol_ms).  The earlier peak = incident,
-    # the later peak = reflected.  This handles:
-    #   • New mic positions where incident ≈ reflected amplitude
-    #   • Cases where T0 places the incident late in the period frame
-    #   • Room echoes (which don't pair with anything at TOF separation)
-    #
-    # Implementation:
-    #   1. Find global maximum → candidate_A
-    #   2. Search for candidate_B at candidate_A ± tof_ms (±tol_ms window)
-    #      Pick the strongest candidate_B in either direction.
-    #   3. If no good candidate_B found, fall back to the first-onset + TOF approach.
-
-    # Step 1: global max as anchor — restricted to interior of period so
-    # bursts cut off at the edges ([0,2ms] and [period-2ms, period]) are ignored.
+    # Step 1: anchor = global max in interior [2ms, period-2ms]
     edge_ms  = 2.0
     lo_edge  = int(edge_ms / 1000 * fs)
     hi_edge  = max(lo_edge + 1, len(env_n) - int(edge_ms / 1000 * fs))
@@ -321,92 +443,101 @@ def detect_windows(period_data, fs, win_half_width_ms=WIN_HALF_WIDTH_MS,
     anchor_sample = lo_edge + int(np.argmax(interior))
     anchor_ms     = float(t_ms[anchor_sample])
 
-    # Step 2: search for pairing peak at anchor ± tof_ms
-    def _search_peak(center_ms):
-        lo = max(0.0, center_ms - tol_ms)
-        hi = min(period_ms, center_ms + tol_ms)
-        if lo >= hi or lo >= period_ms or hi <= 0:
-            return None, 0.0
-        li = int(lo / 1000 * fs)
-        hi_i = min(int(hi / 1000 * fs), len(env_n))
-        hi_i = max(li + 1, hi_i)
-        if li >= len(env_n):
-            return None, 0.0
-        hi_i = min(hi_i, len(env_n))
-        if hi_i <= li:
-            return None, 0.0
-        idx = li + int(np.argmax(env_n[li:hi_i]))
-        return idx, float(env_n[idx])
+    # Step 2: learn anchor burst extent → exclusion zone
+    anc_onset_ms, anc_offset_ms = learn_burst_extent(period_data, fs, anchor_sample)
+    excl_margin_ms = 1.0   # extra gap outside the learned burst edges
+    excl_lo_i = max(0,          int((anc_onset_ms  - excl_margin_ms) / 1000 * fs))
+    excl_hi_i = min(len(env_n), int((anc_offset_ms + excl_margin_ms) / 1000 * fs))
 
-    # Candidate: reflected is AFTER anchor
-    cand_ref_idx, cand_ref_val = _search_peak(anchor_ms + tof_ms)
-    # Candidate: incident is BEFORE anchor (anchor is the reflected)
-    cand_inc_idx, cand_inc_val = _search_peak(anchor_ms - tof_ms)
+    # Step 3: full-interior search for second-largest peak outside exclusion zone
+    # Uses smoothed envelope throughout — no false spikes from carrier ripple.
+    search_mask = np.zeros(len(env_n), dtype=bool)
+    search_mask[lo_edge:hi_edge] = True
+    search_mask[excl_lo_i:excl_hi_i] = False
+    masked_env = np.where(search_mask, env_n, 0.0)
+    second_sample = int(np.argmax(masked_env))
+    second_val    = float(masked_env[second_sample])
 
-    # Amplitude guard (user fix): the mic is positioned for equal incident /
-    # reflected pickup, so the pairing peak must be ≥ MIN_PAIR_FRAC × anchor.
-    # Without this, a multipath at 5% of the anchor amplitude can "win" the
-    # ±TOF search, swapping incident↔reflected assignment and making the xcorr
-    # measure (multipath, real_incident) instead of (incident, reflected).
-    MIN_PAIR_FRAC = 0.40
     anchor_val    = float(env_n[anchor_sample])
-    amp_threshold = MIN_PAIR_FRAC * anchor_val
+    MIN_PAIR_FRAC = 0.40
 
-    cand_ref_ok = cand_ref_idx is not None and cand_ref_val >= amp_threshold
-    cand_inc_ok = cand_inc_idx is not None and cand_inc_val >= amp_threshold
-
-    if cand_ref_ok and (cand_ref_val >= cand_inc_val or not cand_inc_ok):
-        # anchor = incident, cand_ref = reflected
-        inc_sample = anchor_sample
-        ref_sample = cand_ref_idx
-    elif cand_inc_ok:
-        # anchor = reflected, cand_inc = incident
-        inc_sample = cand_inc_idx
-        ref_sample = anchor_sample
-    else:
-        # No valid pairing found above amplitude threshold — fall back to
-        # onset-based search.  Log when the threshold rejected a candidate.
-        if cand_ref_idx is not None and cand_ref_val > 0 and not cand_ref_ok:
-            print(f"  FM3 amp guard: fwd candidate {cand_ref_val:.3f} < "
-                  f"{amp_threshold:.3f} ({MIN_PAIR_FRAC:.0%} × {anchor_val:.3f}) — rejected")
-        if cand_inc_idx is not None and cand_inc_val > 0 and not cand_inc_ok:
-            print(f"  FM3 amp guard: bwd candidate {cand_inc_val:.3f} < "
-                  f"{amp_threshold:.3f} ({MIN_PAIR_FRAC:.0%} × {anchor_val:.3f}) — rejected")
-        threshold = 0.05
-        gate_hi   = max(1, int(min(period_ms, 0.6 * tof_ms) / 1000 * fs))
-        above     = env_n[:gate_hi] > threshold
-        if np.any(above):
-            onset = int(np.argmax(above))
-            inc_sample = onset + int(np.argmax(env_n[onset:min(gate_hi, onset+int(0.005*fs))]))
+    if second_val >= MIN_PAIR_FRAC * anchor_val and second_sample != anchor_sample:
+        # Valid second peak found
+        if second_sample < anchor_sample:
+            inc_sample, ref_sample = second_sample, anchor_sample
         else:
-            inc_sample = 0
-        ref_sample = min(len(env_n)-1, inc_sample + int(tof_ms / 1000 * fs))
+            inc_sample, ref_sample = anchor_sample, second_sample
+        tof_detected_ms = abs(float(t_ms[ref_sample]) - float(t_ms[inc_sample]))
+        print(f"  [detect_windows] peaks at {float(t_ms[inc_sample]):.2f} ms "
+              f"and {float(t_ms[ref_sample]):.2f} ms  "
+              f"(TOF={tof_detected_ms:.2f} ms, R/I={second_val/anchor_val:.2f})")
+    else:
+        # Fallback: tof_us-constrained search
+        print(f"  [detect_windows] full-interior search failed "
+              f"(best second={second_val:.3f} < {MIN_PAIR_FRAC:.0%}×{anchor_val:.3f}), "
+              f"falling back to tof_us={tof_us:.0f} μs")
+        tof_ms   = tof_us / 1000.0
+        fb_lo    = max(lo_edge, int((anchor_ms + tof_ms - tol_ms) / 1000 * fs))
+        fb_hi    = min(hi_edge, int((anchor_ms + tof_ms + tol_ms) / 1000 * fs))
+        if fb_hi > fb_lo:
+            ref_sample = fb_lo + int(np.argmax(env_n[fb_lo:fb_hi]))
+            inc_sample = anchor_sample
+        else:
+            inc_sample = anchor_sample
+            ref_sample = min(len(env_n)-1,
+                             anchor_sample + int(tof_ms / 1000 * fs))
 
     inc_center_ms = float(t_ms[min(inc_sample, len(t_ms) - 1)])
     ref_center_ms = float(t_ms[min(ref_sample, len(t_ms) - 1)])
 
-    hw = win_half_width_ms
-    inc_win = (max(0.0, inc_center_ms - hw), min(period_ms, inc_center_ms + hw))
-    ref_win = (max(0.0, ref_center_ms - hw), min(period_ms, ref_center_ms + hw))
+    # Learn window extent from per0 envelope — replaces fixed ±win_half_width_ms.
+    # win_half_width_ms is kept as a parameter for backward compat but is now only
+    # used as a fallback if the learned window is degenerate.
+    inc_onset_ms, inc_offset_ms = learn_burst_extent(period_data, fs, inc_sample)
+    ref_onset_ms, ref_offset_ms = learn_burst_extent(period_data, fs, ref_sample)
 
-    # FM3b fix: enforce minimum gap between incident window end and return window start.
-    # ring_down_margin ≈ 3×Q/(π×f₀) ≈ 3×0.18 ms = 0.55 ms.  Without this, the return
-    # window can start inside the incident burst's ring-down, contaminating T_return
-    # with T_launch energy and causing both xcorr peaks to land at the same wrong lag.
-    ring_down_margin_ms = 0.3   # reduced from 0.6: 0.6 was clipping reflected burst
-                                # onset for tight-geometry waveforms (e.g. bw_20kHz).
-                                # 0.3 ms still clears the Q/(π×f₀)≈0.18 ms ring-down.
-    min_ref_start = inc_win[1] + ring_down_margin_ms
-    if ref_win[0] < min_ref_start:
-        ref_win = (min(min_ref_start, ref_center_ms), ref_win[1])
-        print(f"  FM3b: return window start advanced to {ref_win[0]:.2f} ms "
-              f"(ring-down separation enforced)")
+    # Fallback: if learned window is too narrow (<1 ms), use safe defaults.
+    # Incident left edge → 0 ms (period start) to capture full burst onset.
+    # Incident right edge → peak + win_half_width_ms (capped below).
+    if (inc_offset_ms - inc_onset_ms) < 1.0:
+        inc_onset_ms  = 0.0
+        inc_offset_ms = min(period_ms, inc_center_ms + win_half_width_ms)
+        print(f"  learn_burst_extent: incident window degenerate, "
+              f"using [0, peak+{win_half_width_ms:.1f}ms] fallback")
+    if (ref_offset_ms - ref_onset_ms) < 1.0:
+        ref_onset_ms  = max(0.0,       ref_center_ms - win_half_width_ms)
+        ref_offset_ms = min(period_ms, ref_center_ms + win_half_width_ms)
+        print(f"  learn_burst_extent: reflected window degenerate, "
+              f"using ±{win_half_width_ms:.1f} ms fallback")
+
+    # Cap incident window right edge at inc + 0.4×TOF.
+    # 40% of inter-peak separation keeps the right edge well clear of the
+    # reflected burst onset (~burst_duration/2 before its peak) while still
+    # capturing the full incident ring-down.
+    tof_detected_ms = ref_center_ms - inc_center_ms
+    max_inc_right   = inc_center_ms + tof_detected_ms * 0.4
+    if inc_offset_ms > max_inc_right:
+        print(f"  detect_windows: incident right edge capped to "
+              f"inc+0.4×TOF = {max_inc_right:.2f} ms  (was {inc_offset_ms:.2f} ms)")
+        inc_offset_ms = max_inc_right
+
+    inc_win = (inc_onset_ms,  inc_offset_ms)
+    ref_win = (ref_onset_ms,  ref_offset_ms)
+
+    # Reflection window must not start before incident window ends — no overlap.
+    # No additional ring-down gap: piezo τ_ringdown ≈ 172 μs, so by inc+0.4×TOF
+    # (≥1 ms past the incident peak) the ring-down is negligible (<e^{-6}).
+    if ref_win[0] < inc_win[1]:
+        ref_win = (inc_win[1], ref_win[1])
+        print(f"  detect_windows: reflection start set to {inc_win[1]:.2f} ms "
+              f"(no-overlap, no dead zone)")
 
     print(f"  Detected incident  peak at {inc_center_ms:.2f} ms  "
-          f"→ window [{inc_win[0]:.2f}, {inc_win[1]:.2f}] ms")
+          f"→ window [{inc_win[0]:.2f}, {inc_win[1]:.2f}] ms  "
+          f"(width={inc_win[1]-inc_win[0]:.2f} ms, envelope-learned)")
     print(f"  Detected reflection peak at {ref_center_ms:.2f} ms  "
           f"→ window [{ref_win[0]:.2f}, {ref_win[1]:.2f}] ms  "
-          f"(sep={ref_center_ms-inc_center_ms:.1f} ms)")
+          f"(width={ref_win[1]-ref_win[0]:.2f} ms, sep={ref_center_ms-inc_center_ms:.1f} ms)")
     return inc_win, ref_win
 
 
@@ -445,13 +576,15 @@ def slice_periods(data, fs, rep_rate, amp_cutoff=0.25):
 
 
 def adaptive_slice_periods(data, fs, rep_rate, tof_us=5700.0,
-                           pre_inc_ms=2.0, amp_threshold=0.15):
+                           pre_inc_ms=4.0, amp_threshold=0.15):
     """
-    FM3a note: pre_inc_ms kept at 2.0 ms (original value).
-    Increasing it made incident window wider → FM3b guard clipped reflected
-    burst onset for some good waveforms → σ regressions.
-    The drift-guard fix (zeroing false shifts_frac) is the main improvement;
-    onset clipping for a0.6_lg_4ms is a secondary issue addressed separately.
+    pre_inc_ms raised from 2.0 → 4.0 ms.
+    At 2.0 ms, high-α waveforms (e.g. a0.8_sm_4ms) have their Hilbert peak
+    at ~3 ms into the 4 ms burst, placing the burst onset at 2−3 = −1 ms
+    (clipped by the period boundary).  4.0 ms puts the onset at ~1 ms inside
+    the window.  FM3b impact: inc_win right edge moves from 5→7 ms, forcing
+    ref_win start to 7.3 ms; at TOF=5.8 ms this clips only ~0.5 ms of the
+    reflected Tukey onset (negligible amplitude) — verified safe for our geometry.
 
     Adaptive period slicer: finds actual incident peaks in the continuous
     recording rather than using fixed uniform cuts.
@@ -478,38 +611,47 @@ def adaptive_slice_periods(data, fs, rep_rate, tof_us=5700.0,
     tol_samples    = int(0.002 * fs)         # ±2ms tolerance on TOF matching
 
     env   = np.abs(hilbert(data))
-    env_n = env / np.max(env)
+    # Normalise by the maximum in the first half of the recording so that
+    # reverberant tails (which can exceed incident amplitude in enclosed spaces)
+    # don't inflate the reference and hide the reflected burst below threshold.
+    env_ref = float(np.max(env[:len(env) // 2])) + 1e-12
+    env_n = env / env_ref
 
     # Minimum spacing between detected peaks.
-    # When TOF < period/3 (e.g. 4ms chirp at 52 Hz: period/3=6.3ms, TOF=5.7ms),
-    # period//3 merges incident and reflected into one peak. Cap min_dist at
-    # 80% of expected TOF so both bursts are always resolvable.
     min_dist = max(1, min(period_samples // 3, int(tof_samples * 0.8)))
     peaks, props = find_peaks(env_n, height=amp_threshold, distance=min_dist)
 
-    # Pair peaks into (incident, reflected) by TOF separation + amplitude guard.
+    # Pair peaks into (incident, reflected) by TOF separation.
     #
-    # Amplitude guard: mic is positioned for roughly equal incident/reflected
-    # pickup, so the paired reflection must be within MIN_PAIR_FRAC–(1/MIN_PAIR_FRAC)
-    # of the candidate incident amplitude.
-    #
-    # Without this, a multipath at 5–20% of the main burst amplitude can form
-    # a "valid" pair with the real incident burst (which arrives ~TOF later and
-    # is 4–20× stronger), swapping the incident↔reflected assignment and making
-    # the xcorr measure (multipath, real_incident) instead of (incident, reflected).
-    # This was the root cause of the spurious ±50 000 μs outliers seen across ~20
-    # of the 45 ECM999 waveforms.
-    #
-    # When the (multipath, real_incident) pair is rejected, the loop finds
-    # (real_incident, real_reflected) on the next iteration.
-    MIN_PAIR_FRAC = 0.40   # reflected must be ≥ 40% of incident amplitude
-    MAX_PAIR_FRAC = 1.0 / MIN_PAIR_FRAC   # and ≤ 2.5× (catches swapped pairs)
+    # KEY CHANGE: search for the reflected directly in the raw envelope at
+    # [p + tof ± tol] rather than requiring it to appear in find_peaks.
+    # In enclosed/reverberant environments the reflected burst can be weaker
+    # than a later echo, falling below find_peaks height threshold even though
+    # it is clearly visible on the scope.
+    # MIN_PAIR_FRAC is applied relative to the LOCAL incident amplitude (env[p]),
+    # not the global max, so it works even when a reverberant tail dominates.
+    MIN_PAIR_FRAC = 0.40   # restored to 0.40 — 0.15 caused false pairings with noise in direct-drive setups
+    MAX_PAIR_FRAC = 1.0 / MIN_PAIR_FRAC
 
     incident_samples = []
     used = set()
     for i, p in enumerate(peaks):
         if i in used:
             continue
+        # Direct envelope search at expected TOF position (no find_peaks dependency)
+        lo = max(0, p + tof_samples - tol_samples)
+        hi = min(len(env), p + tof_samples + tol_samples)
+        if lo >= hi:
+            continue
+        r_idx = lo + int(np.argmax(env[lo:hi]))
+        amp_p = float(env[p])
+        amp_r = float(env[r_idx])
+        ratio = amp_r / (amp_p + 1e-12)
+        if ratio >= MIN_PAIR_FRAC and ratio <= MAX_PAIR_FRAC:
+            incident_samples.append(p)
+            used.add(i)
+            continue
+        # Legacy: also try find_peaks partners (backward compat for open setups)
         # Look for a partner ~TOF after this peak
         for j in range(i + 1, len(peaks)):
             sep = peaks[j] - p
@@ -533,6 +675,18 @@ def adaptive_slice_periods(data, fs, rep_rate, tof_us=5700.0,
         print("  adaptive_slice_periods: no incident-reflected pairs found, "
               "falling back to slice_periods")
         return slice_periods(data, fs, rep_rate)
+
+    # Deduplicate: keep only the EARLIEST incident within each period window.
+    # In reverberant setups (enclosures), wall echoes arrive 1-3 ms after the
+    # direct burst and can be detected as a second valid incident candidate.
+    # Keeping the earliest ensures the direct burst is always the anchor,
+    # preventing bimodal templates from alternating between direct and echo.
+    half_period = window_samples // 2
+    incident_dedup = []
+    for inc in sorted(incident_samples):
+        if not incident_dedup or inc - incident_dedup[-1] > half_period:
+            incident_dedup.append(inc)
+    incident_samples = incident_dedup
 
     # Build windows anchored pre_inc_ms before each incident peak
     slices = []
@@ -573,18 +727,56 @@ def mask_period(period_data, fs, win_ms):
     return out
 
 
+# ── Period-correction helpers (module-level so GUI can import them) ────────────
+
+def fft_shift(x, s):
+    """Sub-sample shift by s samples via FFT phase ramp (circular — |s| < 0.5 only)."""
+    N = len(x)
+    X = np.fft.rfft(x, n=N)
+    X *= np.exp(-2j * np.pi * np.fft.rfftfreq(N) * s)
+    return np.fft.irfft(X, n=N)
+
+
+def linear_shift(x, s):
+    """Integer-sample shift with zero-padding (no circular wrap). Positive s = right."""
+    s = int(round(s))
+    n = len(x)
+    out = np.zeros(n, dtype=x.dtype)
+    if s > 0 and s < n:
+        out[s:] = x[:n - s]
+    elif s < 0 and -s < n:
+        out[:n + s] = x[-s:]
+    else:
+        out[:] = x
+    return out
+
+
+def apply_correction(period, shift_s):
+    """Drift-correct a period: integer part via linear_shift, fraction via fft_shift."""
+    s_int  = int(round(shift_s))
+    s_frac = shift_s - s_int
+    out    = linear_shift(period, -s_int)
+    if abs(s_frac) > 1e-6:
+        out = fft_shift(out, -s_frac)
+    return out
+
+
 # ── Main analysis ──────────────────────────────────────────────────────────────
 
 def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
             incident_win_ms=INCIDENT_WIN_MS, reflection_win_ms=REFLECTION_WIN_MS,
             win_half_width_ms=WIN_HALF_WIDTH_MS, output_dir=OUTPUT_DIR,
-            save_plot=True):
+            save_plot=True, _return_internals=False,
+            _plot_parabola=False, _pipeline_dir=None,
+            _search_radius_us=200.0):
     """
     Run Stubbs dual-template analysis on a WAV file.
     Returns dict with templates, per-period lags, and precision metrics.
     """
-    fs, raw = wavfile.read(wav_path)
-    data = raw.astype(np.float64) / 32768.0 if raw.dtype == np.int16 else raw.astype(np.float64)
+    # Use soundfile to read — handles both standard WAV and RF64 WAV (>4 GB)
+    import soundfile as _sf
+    raw, fs = _sf.read(wav_path, dtype='int16', always_2d=False)
+    data = raw.astype(np.float64) / 32768.0
 
     print(f"Loaded: {os.path.basename(wav_path)}")
     print(f"  Duration: {len(data)/fs*1000:.0f} ms  |  FS: {fs} Hz  |  Rep rate: {rep_rate} Hz")
@@ -631,34 +823,7 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
 
     period_idx = slices[0][1] - slices[0][0]  # all slices are the same length
 
-    def fft_shift(x, s):
-        """Sub-sample shift of x by s samples via FFT phase ramp (circular — small s only)."""
-        N = len(x)
-        X = np.fft.rfft(x, n=N)
-        X *= np.exp(-2j * np.pi * np.fft.rfftfreq(N) * s)
-        return np.fft.irfft(X, n=N)
-
-    def linear_shift(x, s):
-        """Integer-sample LINEAR shift (zero-padding, no wrap). Positive s = shift right."""
-        s = int(round(s))
-        n = len(x)
-        out = np.zeros(n, dtype=x.dtype)
-        if s > 0 and s < n:
-            out[s:] = x[:n - s]
-        elif s < 0 and -s < n:
-            out[:n + s] = x[-s:]
-        else:
-            out[:] = x
-        return out
-
-    def apply_correction(period, shift_s):
-        """Drift-correct a full period: linear shift for integer part, fft_shift for fraction."""
-        s_int  = int(round(shift_s))
-        s_frac = shift_s - s_int
-        out = linear_shift(period, -s_int)          # move burst left to period-0 position
-        if abs(s_frac) > 1e-6:
-            out = fft_shift(out, -s_frac)           # sub-sample residual (always <0.5 samples)
-        return out
+    # fft_shift / linear_shift / apply_correction are module-level (see below analyze)
 
     # Reference = full period 0 (unmasked) — burst is always present for xcorr
     ref0_full = sig[slices[0][0]:slices[0][1]].copy()
@@ -733,18 +898,10 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
           f"total={drift_us[-1]:.1f} μs  "
           f"(adaptive + EMA rate update τ={EMA_TAU:.0f}p)")
 
-    # FM3 drift guard: adaptive_slice_periods anchors every period to its
-    # detected incident peak, so true residual drift should be tiny
-    # (< ~0.5 μs/period from genuine SDG/PicoScope clock mismatch).
-    # Large EMA rates (±3–7 μs/period seen for ECM999 a0.6 waveforms) are
-    # detection noise.  Applying them over 1000+ periods accumulates to ±5 ms,
-    # displacing bursts outside windows and biasing templates vs eval periods.
-    # Threshold: if |rate| > 0.5 μs/period, zero shifts_frac entirely.
-    # Genuine small drifts (UltraMic, ECM999 good waveforms) are ≤ 0.1 μs/period
-    # and are kept.
     _DRIFT_THRESHOLD_US_PER_PERIOD = 0.5
     drift_rate_us = ema_rate * 1e6 / fs
-    if abs(drift_rate_us) > _DRIFT_THRESHOLD_US_PER_PERIOD:
+    _fm3_zeroed = abs(drift_rate_us) > _DRIFT_THRESHOLD_US_PER_PERIOD
+    if _fm3_zeroed:
         shifts_frac_max_us = float(np.max(np.abs(shifts_frac))) * 1e6 / fs
         shifts_frac[:] = 0.0
         print(f"  FM3 drift zeroed: EMA rate {drift_rate_us:.2f} μs/period > "
@@ -754,15 +911,52 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
         print(f"  FM3 drift kept: EMA rate {drift_rate_us:.3f} μs/period "
               f"≤ {_DRIFT_THRESHOLD_US_PER_PERIOD} threshold (genuine small drift)")
 
-    # Build templates: drift-correct each period (linear+fft), then mask
+    # Build templates: adaptive coherent accumulation.
+    #
+    # Standard approach (shifts_frac only): robust when FM3 keeps the EMA, but
+    # fails when FM3 zeroes it — template periods then accumulate with carrier-
+    # max jitter from the raw-envelope slicer, producing multi-hump templates.
+    #
+    # Adaptive fix: after applying shifts_frac, additionally align each period to
+    # the CURRENT RUNNING TEMPLATE via direct xcorr_lag_us.  The direct measurement
+    # is always correct regardless of FM3 status and costs ~1 ms per period.
+    # Search radius for adaptive xcorr:
+    #   FM3 not triggered → burst is at ~4.0ms ± tiny shifts_frac, correction is small.
+    #     ±50 μs is enough and avoids locking onto CCF sidelobes at ±200 μs that
+    #     can appear for narrow-BW waveforms (flat3db: BW=2.3 kHz, sidelobe at ~±435 μs).
+    #   FM3 triggered → bimodal slicer shifts burst by ~200 μs; need wider search.
+    _ADAPTIVE_SEARCH_US = 200.0 if not _fm3_zeroed else 500.0
+    _MAX_TMPL_CORRECT_SAMP = int(0.002 * fs)   # 2 ms hard cap (pathological rejection)
     T_launch_acc = np.zeros(period_idx)
     T_return_acc = np.zeros(period_idx)
+    n_tmpl_corrected = 0
+
     for i in range(n_template):
         corrected = apply_correction(sig[slices[i][0]:slices[i][1]], shifts_frac[i])
-        T_launch_acc += mask_period(corrected, fs, incident_win_ms)
-        T_return_acc += mask_period(corrected, fs, reflection_win_ms)
+        inc_i = mask_period(corrected, fs, incident_win_ms)
+        ref_i = mask_period(corrected, fs, reflection_win_ms)
+
+        if i > 10:   # wait for 10-period accumulation before adaptive xcorr has enough SNR
+            T_L_so_far = T_launch_acc / i
+            # Wide search radius: shifts_frac[i] can reach ±4μs/period × 99 = ±400μs,
+            # and xcorr_lag_us default ±300μs would miss the peak beyond period ~73.
+            τ_direct, _, _, _ = xcorr_lag_us(inc_i, T_L_so_far, fs,
+                                              search_radius_us=_ADAPTIVE_SEARCH_US)
+            extra = τ_direct * fs / 1e6          # samples
+            if 0 < abs(extra) <= _MAX_TMPL_CORRECT_SAMP:
+                corrected = apply_correction(corrected, extra)
+                inc_i = mask_period(corrected, fs, incident_win_ms)
+                ref_i = mask_period(corrected, fs, reflection_win_ms)
+                n_tmpl_corrected += 1
+
+        T_launch_acc += inc_i
+        T_return_acc += ref_i
+
     T_launch = T_launch_acc / n_template
     T_return = T_return_acc / n_template
+    print(f"  Template adaptive alignment: {n_tmpl_corrected}/{n_template-1} periods "
+          f"received extra correction")
+
     print(f"  Templates built from {n_template} aligned periods  "
           f"(incident {incident_win_ms[0]:.2f}–{incident_win_ms[1]:.2f} ms, "
           f"reflection {reflection_win_ms[0]:.2f}–{reflection_win_ms[1]:.2f} ms)")
@@ -784,10 +978,14 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
         corrected = apply_correction(sig[slices[i][0]:slices[i][1]], shifts_frac[i])
         inc_m = mask_period(corrected, fs, incident_win_ms)
         ref_m = mask_period(corrected, fs, reflection_win_ms)
-        τl,  _, _, σl  = xcorr_lag_us(inc_m, T_launch, fs)
-        τr, xc_r, env_r, σr = xcorr_lag_us(ref_m, T_return, fs)
-        τl_sf, σl_sf, _, _ = xcorr_lag_shape_fit(inc_m, T_launch, fs, R_auto=R_auto_L)
-        τr_sf, σr_sf, _, _ = xcorr_lag_shape_fit(ref_m, T_return, fs, R_auto=R_auto_R)
+        τl,  _, _, σl  = xcorr_lag_us(inc_m, T_launch, fs,
+                                       search_radius_us=_search_radius_us)
+        τr, xc_r, env_r, σr = xcorr_lag_us(ref_m, T_return, fs,
+                                             search_radius_us=_search_radius_us)
+        τl_sf, σl_sf, _, _ = xcorr_lag_shape_fit(inc_m, T_launch, fs, R_auto=R_auto_L,
+                                                   coarse_lag_us=τl)
+        τr_sf, σr_sf, _, _ = xcorr_lag_shape_fit(ref_m, T_return, fs, R_auto=R_auto_R,
+                                                   coarse_lag_us=τr)
         tau_launch_list.append(τl);     tau_return_list.append(τr)
         sigma_launch_list.append(σl);   sigma_return_list.append(σr)
         tau_launch_sf_list.append(τl_sf); tau_return_sf_list.append(τr_sf)
@@ -874,36 +1072,76 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # Panel 3: Δτ time series — hollow black circles + error bars + blue thread
+    # Panel 3: Δτ time series — use shape-fit unless it's demonstrably worse than
+    # parabola (near-singular LS for narrow-BW waveforms like flat3db BW=2.3kHz).
+    # Heuristic: if shape-fit median δ > 3× parabola median δ, use parabola.
     ax = axes[2]
     n_template_used = n_template
     t_sec = (np.arange(n_eval) + n_template_used) / rep_rate
-    err_us = sigma_dt_sf * 1e6     # shape-fit propagated uncertainty, μs
+    # Use the estimator that the caller is actually using for its measurements.
+    # Default: shape-fit (original behaviour). Pass _plot_parabola=True when
+    # the pipeline is using parabola (e.g. --use-parabola for narrow-BW waveforms).
+    _estimator_label = 'parabola' if _plot_parabola else 'shape-fit'
+    _dt_plot = delta_tau        if _plot_parabola else delta_tau_sf
+    err_us   = sigma_dt_para    if _plot_parabola else sigma_dt_sf
 
-    # Blue thread
-    ax.plot(t_sec, delta_tau_sf, '-', color='#4477cc', lw=0.7, alpha=0.6, zorder=1)
-    # Error bars + hollow black circles (plot every point; errorevery thins if dense)
-    step = max(1, n_eval // 600)   # cap to ~600 visible error bars
-    ax.errorbar(t_sec[::step], delta_tau_sf[::step], yerr=err_us[::step],
+    # MAD-based outlier removal, then fit axis tightly to inlier data range
+    _med      = float(np.median(_dt_plot))
+    _mad      = float(np.median(np.abs(_dt_plot - _med))) * 1.4826
+    _clip_hw  = 5.0 * _mad
+    _inlier   = np.abs(_dt_plot - _med) <= _clip_hw
+    n_hidden  = int(np.sum(~_inlier))
+
+    # Inlier-only stats for hlines and legend
+    _mean_plot = float(np.mean(_dt_plot[_inlier]))
+    _std_plot  = float(np.std(_dt_plot[_inlier]))
+
+    dt_plot = _dt_plot.astype(float).copy()
+    dt_plot[~_inlier] = np.nan
+
+    ax.plot(t_sec, dt_plot, '-', color='#4477cc', lw=0.7, alpha=0.6, zorder=1)
+    step = max(1, n_eval // 600)
+    _sel = _inlier[::step]
+    ax.errorbar(t_sec[::step][_sel], _dt_plot[::step][_sel], yerr=err_us[::step][_sel],
                 fmt='o', ms=2.5, mfc='none', mec='black', mew=0.7,
-                ecolor='black', elinewidth=0.5, capsize=0, zorder=2, alpha=0.7)
-    ax.axhline(mean_dt_sf, color='navy', ls='--', lw=1.2, alpha=0.7,
-               label=f'mean = {mean_dt_sf:.3f} μs')
-    ax.axhline(mean_dt_sf + std_dt_sf, color='gray', ls=':', lw=0.9)
-    ax.axhline(mean_dt_sf - std_dt_sf, color='gray', ls=':', lw=0.9,
-               label=f'σ = {std_dt_sf:.3f} μs  ({std_dt_sf/TOF_SENS_US_PER_DEG:.4f}°C/ping)')
+                ecolor='black', elinewidth=0.5, capsize=2, zorder=2, alpha=0.7)
+
+    ax.axhline(_mean_plot, color='navy', ls='--', lw=1.2, alpha=0.7,
+               label=f'mean = {_mean_plot:.3f} μs  (inliers)')
+    ax.axhline(_mean_plot + _std_plot, color='gray', ls=':', lw=0.9)
+    ax.axhline(_mean_plot - _std_plot, color='gray', ls=':', lw=0.9,
+               label=f'σ = {_std_plot:.3f} μs  ({_std_plot/TOF_SENS_US_PER_DEG:.4f}°C/ping)')
+
+    _ylo_data = float(_dt_plot[_inlier].min())
+    _yhi_data = float(_dt_plot[_inlier].max())
+    _yrange   = max(_yhi_data - _ylo_data, 2 * _mad, 0.2)
+    ax.set_ylim(_ylo_data - 0.12*_yrange, _yhi_data + 0.12*_yrange)
+
+    if n_hidden:
+        ax.text(0.99, 0.03,
+                f'{n_hidden} outlier{"s" if n_hidden > 1 else ""} hidden  '
+                f'(|Δτ−med| > {_clip_hw:.2f} μs = 5×MAD)',
+                transform=ax.transAxes, ha='right', va='bottom',
+                fontsize=7.5, color='#cc4444',
+                bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='#cc4444',
+                          alpha=0.85, lw=0.8))
+
     ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Δτ (μs)')
-    ax.set_title(f'Δτ time series  (shape-fit)  '
-                 f'N={n_eval}  σ={std_dt_sf:.3f} μs  '
-                 f'δ_prop med={np.median(sigma_dt_sf)*1e6:.0f} ns')
-    ax.legend(fontsize=8)
+    ax.set_ylabel('Δτ = τ_return − τ_launch  (μs)')
+    ax.set_title(f'Δτ time series  ({_estimator_label})  '
+                 f'N={n_eval} ({n_eval - n_hidden} shown)  '
+                 f'σ={_std_plot:.3f} μs  '
+                 f'δ_prop med={np.median(err_us)*1e3:.1f} ns')
+    ax.legend(fontsize=8, loc='upper right')
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     stem = os.path.splitext(os.path.basename(wav_path))[0]
-    # Always save into stubbs_pipeline_v1/ next to the WAV file
-    pipeline_dir = os.path.join(os.path.dirname(wav_path), '..', 'stubbs_pipeline_v1')
+    # v2: parabola-seeded shape-fit (eliminates carrier-cycle slips)
+    _default_pipeline = 'stubbs_pipeline_vtest' if _search_radius_us != 200.0 \
+        else 'stubbs_pipeline_v3'
+    pipeline_dir = _pipeline_dir if _pipeline_dir is not None else \
+        os.path.join(os.path.dirname(wav_path), '..', _default_pipeline)
     pipeline_dir = os.path.normpath(pipeline_dir)
     os.makedirs(pipeline_dir, exist_ok=True)
     if save_plot:
@@ -917,10 +1155,13 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
              delta_tau=delta_tau_sf, sigma_launch=np.array(sigma_launch_sf_list),
              sigma_return=np.array(sigma_return_sf_list),
              tau_launch=tau_launch_sf, tau_return=tau_return_sf,
-             rep_rate=rep_rate, n_template=n_template)
+             rep_rate=rep_rate, n_template=n_template,
+             T_launch=T_launch, T_return=T_return,
+             incident_win_ms=np.array(incident_win_ms),
+             reflection_win_ms=np.array(reflection_win_ms))
     print(f"  NPZ  saved: {npz_path}")
 
-    return dict(
+    _result = dict(
         T_launch=T_launch, T_return=T_return,
         tau_launch=tau_launch, tau_return=tau_return, delta_tau=delta_tau,
         mean_delta_tau_us=mean_dt, std_delta_tau_us=std_dt,
@@ -945,6 +1186,11 @@ def analyze(wav_path, rep_rate=REP_RATE, n_template=N_TEMPLATE,
         ex_lags_l=lags_l, ex_lags_r=lags_r,
         ex_tau_l=τl_ex, ex_tau_r=τr_ex,
     )
+    if _return_internals:
+        _result['_sig']         = sig
+        _result['_slices']      = slices
+        _result['_shifts_frac'] = shifts_frac
+    return _result
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
