@@ -31,6 +31,11 @@ siglent_project/recording_jun8_trial2.npz
 # ── Claude Code local tooling (memory, skills, settings) ─────────────────────
 .claude/
 
+# ── Secrets / credentials ─────────────────────────────────────────────────────
+setup_claude.sh
+*.env
+*_api_key*
+
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
