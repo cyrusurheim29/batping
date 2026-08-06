@@ -497,23 +497,11 @@ Below is a guide to the different characteristics of the chirped waveform that w
 All of the first-round recordings (completely V0--no corrections made) from July 9 of characteristic chirped waveforms and alpha-sweep waveforms can be found in this zip file:
 
 
-# Transponder Setup
+Here are some characteristic  
 
-Parts list:
 
-- 2x Siglent SDG 1062X waveform generators
-- 1x custom-built delayed re-emitter circuit board
-- 1x Dodotronic Ultramic 384kHz
-- 1x analog input microphone
-- 1x power supply for analog input microphone
-- 1x Siglent SPA 1010 Power Amplifier (for first piezo transducer array)
-- 1x SRS pre-amplifier
+Wow, it was not easy to get this pipeline working. Claude struggled with peak-finding and proper windowing around subsequent periods (not for the first time…) while accounting for timing jitter and drift of Siglent SDG waveform generator and the Dodotronic ultramic.
 
-A note on the SPA power amplifier: under the output knob the power amplifier lists the output impedance Z\_0 \< 2 Ohms. Given that the piezo transducers were calculated to have an input impedance of \~44 Ohms at 40kHz, it seems like the piezo array is within the ideal regime for the power amplifier. It’s a simple voltage divider when the amplifier is loaded with the piezo transducers, so let’s calculate the voltage transfer ratio:
-
-> V\_load / V\_source = Z\_load / (Z\_out + Z\_load) = 44 / (2 + 44) ≈ 0.957
-
-So, less than 4% of the source voltage drops across the amplifier’s output impedance. The piezo sees essentially the full drive voltage.
 
 
 # Files

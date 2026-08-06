@@ -1,0 +1,267 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1.1in, top=1.0in, bottom=1.1in]{geometry}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage[colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue]{hyperref}
+\usepackage{parskip}
+\usepackage{setspace}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage{textcomp}   % \textdegree
+\usepackage{abstract}
+
+\setstretch{1.15}
+
+%% ─── Title block ─────────────────────────────────────────────────────────────
+\title{%
+  \textbf{BATPING: Weekly Progress Report}\\[4pt]
+  \large Bidirectional Acoustics Traveltime Pulser for INdex Gradients\\[2pt]
+  \normalsize Week of July 14--18, 2026
+}
+\author{Cyrus Urheim\\
+        \small Department of Physics, Harvard University\\
+        \small PRISE 2026
+}
+\date{July 20, 2026}
+
+\begin{document}
+\maketitle
+\hrule
+\vspace{4pt}
+
+%% ─── Abstract ────────────────────────────────────────────────────────────────
+\begin{abstract}
+\noindent
+This note summarises BATPING bench-prototype progress during the week of
+July 14--18, 2026.
+Three activities are reported: (1)~piezo-array transfer function
+re-characterisation for both the UltraMic\,384k and ECM999 microphones;
+(2)~new chirped-waveform recording sessions with both microphones and the
+diagnosis and correction of three matched-filter pipeline failure modes that
+produced jump discontinuities in the differential time-of-flight (TOF)
+time series; and
+(3)~a first attempt at a controlled temperature-change experiment using
+a resistive dummy load on the optical rail, along with the issues identified
+and the planned remediation.
+\end{abstract}
+
+\hrule
+\bigskip
+
+%% ─── Intro / context ─────────────────────────────────────────────────────────
+\noindent
+My main work this past week has been (1)~documenting and finalising all results
+using the Dodotronic UltraMic (which digitises at 384\,kSa/s),
+(2)~implementing the new ECM999 measurement microphone and running new
+chirped-waveform recordings with it for repeatability, and (3)~attempting to
+introduce a controlled temperature fluctuation along the acoustic path using
+dummy-load resistors.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Piezo Array Transfer Function Measurements}
+%% ─────────────────────────────────────────────────────────────────────────────
+
+I re-recorded transfer functions for both the piezo-array\,+\,UltraMic\,384k
+and piezo-array\,+\,ECM999 systems, following your recommendation to sweep
+frequency by frequency rather than using a broadband chirp.
+For the UltraMic, each step used an 8\,ms burst of continuous sine (1.2\,V$_\mathrm{pp}$,
+Savitzky--Golay smooth $w=71$), with a 20\,ms settle time between steps
+(900 frequencies, 20--65\,kHz at 50\,Hz spacing).
+For the ECM999, the SDG was set to continuous (BSWV) sine output at 0.5\,V$_\mathrm{pp}$
+and the PicoScope captured a 50\,ms steady-state window per step with the
+same settle time and frequency grid.
+Both approaches yield per-step SNR of 30--60\,dB across the piezo passband.
+Figure~\ref{fig:tf_comparison} compares the two resulting system transfer
+functions.
+
+\begin{figure}[h!]
+  \centering
+  \includegraphics[width=\textwidth]{tf_comparison_ultramic_ecm999.png}
+  \caption{%
+    Piezo-array system transfer function $H(f)$, normalised to the smoothed
+    peak, for the UltraMic\,384k (\textit{left}; 8\,ms burst stepped-sine,
+    1.2\,V$_\mathrm{pp}$) and the ECM999\,+\,SR560\,$\times$100 via
+    PicoScope\,5444D (\textit{right}; BSWV continuous sine, 0.5\,V$_\mathrm{pp}$).
+    Both sweeps used 900 steps from 20--65\,kHz at 50\,Hz spacing with 20\,ms
+    settle time; responses are Savitzky--Golay smoothed ($w=71$).
+    Thin traces show the raw per-step amplitude; bold traces show the smooth.
+    Shaded bands and dashed lines indicate the $-3$\,dB and $-6$\,dB
+    bandwidths relative to the smoothed peak.
+    The solid blue vertical line marks the 40\,kHz BATPING carrier.}
+  \label{fig:tf_comparison}
+\end{figure}
+
+Both systems are dominated by the piezo array's acoustic resonance, peaking
+at 41.3--41.5\,kHz.
+Both microphones yield very similar passbands: the UltraMic gives a
+$-3$\,dB BW of 2.5\,kHz (40.4--42.9\,kHz) and $-6$\,dB BW of 4.3\,kHz,
+while the ECM999 gives $-3$\,dB BW of 2.3\,kHz (40.3--42.6\,kHz) and
+$-6$\,dB BW of 4.4\,kHz — essentially identical within measurement uncertainty.
+The ECM999 shows a slightly broader passband, consistent with the difference
+in measurement method (continuous sine vs.\ burst) and the SR560 preamplifier
+shaping.
+Notably, the UltraMic response is flat across the 20--65\,kHz sweep range
+with no sharp rolloff, confirming its suitability for broadband characterisation,
+while the ECM999 shows secondary features around 55--60\,kHz that are present
+in both microphone measurements and therefore originate from the transmitting
+piezo array rather than either microphone.
+
+With the new transfer functions in hand, I recomputed the per-frequency
+pre-compensation amplitude profiles for all chirped waveforms before
+conducting the recording sessions described in Section~\ref{sec:sessions}.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Chirped Waveform Sessions and Pipeline Improvements}
+\label{sec:sessions}
+%% ─────────────────────────────────────────────────────────────────────────────
+
+Using the updated pre-compensation, I recorded two new sessions with each
+microphone (UltraMic\,384k and ECM999).
+Across all four sessions, sweeping burst durations of 2--4\,ms, bandwidths
+of 6--20\,kHz, and pre-emphasis exponents $\alpha = 0.2$--$0.8$, we
+continue to achieve per-ping LS-fit measurement uncertainty
+$\delta(\Delta\tau)$ on the order of 2--5\,ns with both microphones.
+
+The multi-session dataset also provided an opportunity to characterise
+several failure modes that had been contributing to jump discontinuities
+in the differential-TOF time series (Figure~\ref{fig:v1_failures}).
+
+\begin{figure}[h!]
+  \centering
+  \includegraphics[width=0.88\textwidth]{recordings/20260716_015251_ecm999_full_sweep_v2_ecmHf/plots/bw_10dB_asym_2ms_comp_light/stubbs_pipeline_lsfit_v1/stubbs_lsfit.png}
+  \caption{%
+    Differential-TOF time series $\Delta\tau(t)$ from pipeline v1 for
+    waveform \texttt{bw\_10dB\_asym\_2ms\_comp\_light}
+    (ECM999\,+\,SR560, Jul.\,16 full-sweep session).
+    The bottom panel shows multiple jump discontinuities scattered
+    throughout the 30-second recording on an otherwise smooth underlying
+    trend; the per-ping LS-fit uncertainty $\delta(\Delta\tau)$ during
+    quiet stretches is $\sim$2\,ns, confirming that the discontinuities
+    are artefactual rather than physical temperature fluctuations.}
+  \label{fig:v1_failures}
+\end{figure}
+
+The jump discontinuities arose from three distinct failure modes, illustrated
+in Figures~\ref{fig:diag_v3} and~\ref{fig:diag_v4}.
+First, \textit{burst-window drift}: the waveform generator and digitiser
+operate on independent clocks with a $\approx$187\,ppm frequency offset,
+so over thousands of pings the acoustic burst gradually migrates within
+its fixed analysis window; once the burst drifts far enough to be clipped
+at the window boundary, the cross-correlation returns a spurious lag
+(visible as periods labelled ``BAD'' in Figure~\ref{fig:diag_v3}, where
+the reflected-signal trace in the analysis window is nearly zero).
+Second, \textit{window overlap}: the outgoing and reflected burst analysis
+windows were initially placed too close together, allowing the piezo
+ring-down of the outgoing pulse to bleed into the reflected-pulse template.
+Third, \textit{carrier-cycle slipping}: because the cross-correlation function
+has sidelobes spaced one carrier period ($25\,\mu$s) apart, the estimator
+occasionally locked onto the wrong sidelobe, producing a lag error that
+is an integer multiple of $25\,\mu$s.
+Each failure mode was individually diagnosed and patched in pipeline v2.
+
+\begin{figure}[h!]
+  \centering
+  \includegraphics[width=\textwidth]{diag_a0.8_sm_4ms_v3.png}
+  \caption{%
+    Per-period diagnostic for waveform \texttt{a0.8\_sm\_4ms} under
+    pipeline v1, showing five representative evaluation periods.
+    \textit{Left}: drift-corrected full period with incident (pink) and
+    reflected (blue) analysis windows.
+    \textit{Centre}: co-added return template $T_R$ (red) overlaid on the
+    actual received signal $m_\mathrm{ref}$ (grey) in the reflected window.
+    \textit{Right}: Hilbert envelope of the reflected cross-correlation.
+    In the three ``BAD'' periods (rows 3--5), accumulated clock drift has
+    pushed the reflected burst outside the analysis window: the received
+    signal in the centre panel is essentially zero, and the cross-correlation
+    envelope is flat noise with no identifiable peak.}
+  \label{fig:diag_v3}
+\end{figure}
+
+\begin{figure}[h!]
+  \centering
+  \includegraphics[width=\textwidth]{diag_a0.8_sm_4ms_v4.png}
+  \caption{%
+    Same diagnostic as Figure~\ref{fig:diag_v3} for the same five evaluation
+    periods under the corrected pipeline v4.
+    The adaptive period slicer now anchors each analysis window to the
+    detected incident burst rather than using fixed time slots, so
+    accumulated clock drift no longer displaces the reflected burst.
+    All five periods are now ``GOOD'': the reflected signal fills the window,
+    the cross-correlation has a sharp single peak, and the LS-fit uncertainty
+    $\delta_R$ is 1.4--2.2\,ns across all periods including the formerly
+    pathological evaluations 1309, 1312, and 1400.}
+  \label{fig:diag_v4}
+\end{figure}
+
+With these corrections in place, pipeline v2 eliminates almost all
+instances of measurement jitter across the 2\,m bench path
+(Figure~\ref{fig:v2_clean}).
+
+\begin{figure}[h!]
+  \centering
+  \includegraphics[width=0.88\textwidth]{recordings/20260716_015251_ecm999_full_sweep_v2_ecmHf/plots/bw_10dB_asym_2ms_comp_light/stubbs_pipeline_lsfit_v2/stubbs_lsfit.png}
+  \caption{%
+    Differential-TOF time series from pipeline v2 for the same waveform
+    and session as Figure~\ref{fig:v1_failures}
+    (\texttt{bw\_10dB\_asym\_2ms\_comp\_light}, ECM999).
+    The jump discontinuities visible in v1 are eliminated; the time series
+    follows a smooth physical trend with the per-ping uncertainty
+    $\delta(\Delta\tau)$ reduced to $\sim$2\,ns.}
+  \label{fig:v2_clean}
+\end{figure}
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Controlled Temperature Experiment: Dummy-Load Resistor}
+%% ─────────────────────────────────────────────────────────────────────────────
+
+On Thursday and Friday I ran a first controlled temperature-change test using
+a 25\,W RF dummy-load resistor (XRDS-RF, 50\,$\Omega$, BNC connector)
+mounted at the midpoint of the 1\,m Thorlabs optical breadboard, directly
+beneath the acoustic path.
+DC power was supplied by a Keithley 2231A-30-3 triple-channel supply found
+in the lab, and BATPING was recorded continuously using
+\texttt{picoscope\_batping\_record.py} while voltage was slowly ramped.
+Two power levels were explored: 10\,V ($\approx$2\,W, 8\% of the 25\,W
+rating) and 30\,V (18\,W, 72\% of rating, the Keithley's maximum output).
+The resistor did not heat up appreciably at 10\,V after 15\,minutes;
+it was warm to the touch at 30\,V.
+In both cases the recordings showed nanosecond-scale uncertainty during
+quiet stretches, but with frequent large jump discontinuities.
+
+Two issues were identified post-hoc.
+First, \textit{acoustic scintillation}: at 18\,W the resistor drove a strong
+convective plume above the rail.
+Turbulent air scattered the acoustic wavefront --- the acoustic analogue of
+optical dome seeing --- causing the received signal amplitude to fluctuate
+by more than an order of magnitude between 30-second analysis windows.
+Windows with near-zero amplitude yield meaningless lag estimates regardless
+of pipeline quality.
+Second, \textit{incorrect PicoScope sample rate}: the TIMEBASE register had
+been set using the formula for 8-bit ADC resolution, whereas the unit was
+operating in 12-bit mode; this resulted in an actual sample rate of
+251\,kSa/s (6.3 samples per 40\,kHz carrier cycle) rather than the intended
+1\,MSa/s (25.6 samples/cycle).
+
+Both issues have been corrected.
+The recording script now uses the proper 12-bit TIMEBASE value (verified by
+direct SDK query to the connected scope), and the next heat test will use
+a much lower power level of 5--10\,V (0.5--2\,W).
+At these levels the thermal gradient should develop slowly and without a
+disruptive convective plume; at 1\,W, an air-column temperature rise of
+$\sim$0.1--0.5\,\textdegree C over 5--10\,minutes is expected --- well
+within BATPING's $\sim$0.05\,\textdegree C per-ping sensitivity.
+I plan to re-record at multiple power levels tomorrow and will send an
+update then.
+
+\bigskip
+\hrule
+\vspace{4pt}
+\noindent\small\textit{%
+  All analysis code, recording scripts, and figures are version-controlled
+  in the project repository.
+  Report prepared \today.}
+
+\end{document}

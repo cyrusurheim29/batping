@@ -89,9 +89,10 @@ def _get_period(r, eval_idx, R_auto_L, R_auto_R,
     inc_m = csa.mask_period(corrected, fs, inc_ms)
     ref_m = csa.mask_period(corrected, fs, ref_ms)
 
-    # Parabola (envelope argmax + 11-pt parabola) — robust, no carrier ambiguity
-    τl, xc_l, env_l, _ = csa.xcorr_lag_us(inc_m, T_L, fs)
-    τr, xc_r, env_r, _ = csa.xcorr_lag_us(ref_m, T_R, fs)
+    # Parabola — use same 700μs search radius as analyze() vtest, so GUI hover
+    # matches the analysis output for Category 1/2 shifted CCF peaks.
+    τl, xc_l, env_l, _ = csa.xcorr_lag_us(inc_m, T_L, fs, search_radius_us=700.0)
+    τr, xc_r, env_r, _ = csa.xcorr_lag_us(ref_m, T_R, fs, search_radius_us=700.0)
 
     lags_l = (np.arange(len(xc_l)) - (len(T_L) - 1)) / fs * 1e6
     lags_r = (np.arange(len(xc_r)) - (len(T_R) - 1)) / fs * 1e6
@@ -124,8 +125,14 @@ def _get_period(r, eval_idx, R_auto_L, R_auto_R,
             dechirp=True,
         ))
     else:
-        τl_sf, σl_sf, _, _ = csa.xcorr_lag_shape_fit(inc_m, T_L, fs, R_auto=R_auto_L)
-        τr_sf, σr_sf, _, _ = csa.xcorr_lag_shape_fit(ref_m, T_R, fs, R_auto=R_auto_R)
+        # Seed shape-fit with parabola coarse — matches analyze() behaviour.
+        # Without seeding, the GUI's independent ±200μs coarse search can land
+        # on a different carrier maximum than the parabola, making the displayed
+        # SF value inconsistent with what analyze() actually computed.
+        τl_sf, σl_sf, _, _ = csa.xcorr_lag_shape_fit(inc_m, T_L, fs, R_auto=R_auto_L,
+                                                       coarse_lag_us=τl)
+        τr_sf, σr_sf, _, _ = csa.xcorr_lag_shape_fit(ref_m, T_R, fs, R_auto=R_auto_R,
+                                                       coarse_lag_us=τr)
         out.update(dict(
             τl_sf=τl_sf, τr_sf=τr_sf, σl_sf=σl_sf, σr_sf=σr_sf,
         ))
@@ -194,19 +201,16 @@ def _panel2(ax, pd, abs_idx):
     m_l = (lags_l >= τl_sf - zoom) & (lags_l <= τl_sf + zoom)
     m_r = (lags_r >= τr_sf - zoom) & (lags_r <= τr_sf + zoom)
 
-    # Normalise raw CCF relative to its peak in the zoom window
-    peak_l = np.max(np.abs(xc_l[m_l])) + 1e-12
-    peak_r = np.max(np.abs(xc_r[m_r])) + 1e-12
-    xc_l_n = xc_l / peak_l
-    xc_r_n = xc_r / peak_r
-    env_l_n = env_l / peak_l
-    env_r_n = env_r / peak_r
+    # Normalise raw CCF to global peak (original behaviour — envelope kept in
+    # absolute units so it stays visually prominent above the oscillating CCF)
+    xc_l_n = xc_l / (np.max(np.abs(xc_l)) + 1e-12)
+    xc_r_n = xc_r / (np.max(np.abs(xc_r)) + 1e-12)
 
     ax.cla()
     ax.plot(lags_l[m_l], xc_l_n[m_l], 'b-', lw=0.6, alpha=0.45)
     ax.plot(lags_r[m_r], xc_r_n[m_r], 'r-', lw=0.6, alpha=0.45)
-    ax.plot(lags_l[m_l], env_l_n[m_l], 'b-', lw=2.0, alpha=0.9, label='envelope launch')
-    ax.plot(lags_r[m_r], env_r_n[m_r], 'r-', lw=2.0, alpha=0.9, label='envelope return')
+    ax.plot(lags_l[m_l], env_l[m_l],   'b-', lw=2.0, alpha=0.9)
+    ax.plot(lags_r[m_r], env_r[m_r],   'r-', lw=2.0, alpha=0.9)
 
     if dechirp:
         # Dechirped CCF (Re(xc_d_rot)) and dechirped template model (Rau_d) ─────
@@ -263,13 +267,18 @@ def _panel2(ax, pd, abs_idx):
                    label=f'τ_R para = {τr:.2f} μs{"  ⚠ SLIP" if slip_r else ""}')
 
     ax.set_xlabel('Lag (μs)')
-    ax.set_ylabel('Normalised xcorr / dechirped')
     slip_warn = '  ⚠ CARRIER-CYCLE SLIP' if (slip_l or slip_r) else ''
-    mode_str  = 'dechirped LS' if dechirp else 'shape-fit'
-    ax.set_title(
-        f'Cross-Corr + dechirped fit (period {abs_idx}){slip_warn}\n'
-        f'Δτ_{mode_str[:2]}={Δτ_sf:.4f} μs  |  Δτ_para={Δτ_para:.4f} μs')
-    ax.legend(fontsize=7.0, loc='upper left')
+    if dechirp:
+        ax.set_ylabel('Normalised xcorr / dechirped')
+        ax.set_title(
+            f'Cross-Corr + dechirped fit (period {abs_idx}){slip_warn}\n'
+            f'Δτ_de={Δτ_sf:.4f} μs  |  Δτ_para={Δτ_para:.4f} μs')
+    else:
+        ax.set_ylabel('Normalised xcorr')
+        ax.set_title(
+            f'Example Cross-Correlations (period {abs_idx}){slip_warn}\n'
+            f'Δτ_SF={Δτ_sf:.2f} μs  |  Δτ_para={Δτ_para:.2f} μs')
+    ax.legend(fontsize=7.5, loc='upper left')
     ax.grid(True, alpha=0.3)
 
 

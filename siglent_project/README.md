@@ -1,308 +1,96 @@
-# BATPING Siglent Project
+# siglent_project — BATPING Analysis Pipeline
 
-Ultrasonic time-of-flight (TOF) measurement system for acoustic thermometry.
+This directory contains all scripts and results for the BATPING acoustic thermometry system. Hardware is driven by a Siglent SDG1062X AWG and recorded by a PicoScope 5000D.
 
-## Goal
+---
 
-Measure air temperature via speed of sound: c(T) = 331.3 + 0.6T m/s. For a 2-meter round-trip path, achieving 0.1°C precision requires TOF precision < 1 μs.
+## Core scripts
 
-## Hardware
+### Recording
+| Script | Purpose |
+|---|---|
+| `picoscope_batping_record.py` | Main recording script. Streams Ch A (audio, 384 kSa/s) + Ch B (TMP36 temperature). Writes RF64 WAV + TMP36 CSV. Includes SDG keepalive to prevent TCP timeout. |
+| `voltage_calibration.py` | Measure SDG output voltage and calibrate level before heat tests. |
+| `tmp36_calibration.py` | Quick TMP36 verification on PicoScope Ch B (no SDG required). |
 
-- **AWG**: Siglent SDG1062X via LAN (10.11.13.230:5025)
-- **Microphone**: Dodotronic UltraMic @ 384 kHz
-- **Transducers**: 40 kHz piezoelectric array (resonant, Q~20)
-- **Geometry**: Piezo + mic side-by-side, 1 m to flat reflector (2 m round-trip)
+### Analysis
+| Script | Purpose |
+|---|---|
+| `chirp_stubbs_analysis.py` | **Core pipeline.** Dual-template co-add → per-period xcorr shape-fit → Δτ time series. All key analysis parameters live here (BURST_MS, search radius, window guards). |
+| `stubbs_longterm_xcorr_vtestv1.py` | **Batch long-recording analysis (current best).** Wraps `chirp_stubbs_analysis.py` for 20–40 min recordings; outputs to `analysis_xcorr_vtestv1/`. |
+| `stubbs_longterm_xcorr_vtest.py` | Older batch script (±700 μs search, no minimum window fix). |
+| `chunk_gui.py` | Interactive 3-panel diagnostic GUI. Loads one chunk, shows templates + xcorr + Δτ. Run as `python chunk_gui.py <chunk.wav>`. |
+| `run_lsfit_stats.py` | Compute σ and median Δτ from a batch of vtestv1 NPZ output files. |
+| `analyze_statistics_campaign.py` | Aggregate noise floor statistics across an ensemble of 30 s recordings. |
 
-## Piezo Characterization (June 2026)
+### Sweeps / Characterization
+| Script | Purpose |
+|---|---|
+| `chirp_sweep.py` | LFM chirp parameter sweep (BW, duration, compensation factor). |
+| `alpha_sweep.py` | α-factor sweep over H(f)⁻ᵅ compensation (α = 0.2–0.8, sm/md/lg BW). |
+| `ecm999_full_sweep.py` | Full stepped-sine transfer function of ECM999 microphone. |
+| `ecm999_stepped_sine.py` | Single-frequency stepped-sine burst characterization. |
+| `piezo_characterization.py` | Chirp-based piezo bandwidth measurement. |
+| `ultramic_transfer_function.py` | Transfer function measurement for UltraMic. |
+| `barker7_prbs_testing.py` | Barker-7 BPSK coded waveform sweep (archived; chirp outperforms). |
 
-Measured via chirp method (see `README_piezo_characterization.md`):
-- **Center frequency**: 41.0 kHz
-- **-3 dB bandwidth**: 2.0 kHz (passband 40.0 - 42.0 kHz)
-- **-6 dB bandwidth**: 4.8 kHz
-- **Q factor**: ~20
+### Utilities
+| Script | Purpose |
+|---|---|
+| `batping_timeseries_viewer.py` | Quick viewer for Δτ time series NPZ files. |
+| `run_oscillation_heatpad.sh` | Timed heatpad oscillation protocol with macOS notifications. |
+| `run_statistics_campaign.sh` | Batch-run multiple 30 s recordings for noise floor statistics. |
 
-## Waveform Optimization
+---
 
-### Approach
-Bayesian optimization over parameterized Gaussian pulse with pre/post compensation bursts. Objective: minimize response envelope autocorrelation FWHM (determines TOF precision).
+## Key result files
 
-### Results
+| File | Description |
+|---|---|
+| `statistics_campaign_summary.png` | Noise floor summary across open / enclosure conditions |
+| `waterfall_all_heattests.png` | Δτ waterfall across all heat tests and baselines (4°C offset/trace) |
+| `ecm999_transfer_function.png/.npz` | ECM999 mic frequency response |
+| `stepped_sine_characterization_burst8ms_20260715_152456.png/.npz` | Final stepped-sine piezo H(f) |
+| `ultramic_transfer_function_20260715_113049_fixed.png/.npz` | UltraMic H(f) |
+| `piezo_characterization.png/.npz` | Chirp-based piezo bandwidth |
+| `barker7_cycles_sweep_summary_v6.png` | Barker-7 FWHM vs cycles/chip sweep summary |
+| `waveform_comparison_table_20260707_102902.png` | σ_TOF comparison across all tested waveforms |
+| `theo_vs_meas_sigma_tof.png` | Cramér-Rao bound vs measured σ_TOF |
+| `poster_schematic.png` | Hardware schematic for poster/presentations |
 
-| Version | Iterations | σ (cycles) | Autocorr FWHM | Improvement |
-|---------|------------|------------|---------------|-------------|
-| Baseline | - | 5.0 | 443 μs | - |
-| V1 | 100 | ~3 | ~350 μs | ~20% |
-| V2 | 200 | 2.32 | 307 μs | 31% |
-| V3 | 1000 | 1.93 | 275 μs | 38% |
+---
 
-### Key Finding
-Optimizer consistently converges to σ ≈ 2 cycles regardless of iterations, suggesting this is near the hardware-limited optimum given the 2 kHz piezo bandwidth. Theoretical floor is ~250 μs (≈ 1/bandwidth).
+## Pipeline parameter reference
 
-## Next Steps: PRBS Waveforms
+These live at the top of `chirp_stubbs_analysis.py`:
 
-Pseudo-random binary sequences (Barker codes, MLS) could achieve sharper correlation peaks through pulse compression. See `prbs_waveform_theory.tex` for theory.
-
-**Constraints from piezo bandwidth:**
-- Chip duration T_c ≥ 1/B = 500 μs (aggressive) to 1000 μs (conservative)
-- Max ~10-12 chips before multipath (5-6 ms window)
-- Barker-7, Barker-11, or Barker-13 are candidates
-
-**Pending**: ~~Advisor suggests stepped-sine characterization to validate chirp-based bandwidth measurement.~~ Implemented — see `stepped_sine_characterization.py`.
-
-## Stepped-Sine Validation (June 15, 2026)
-
-Validates chirp-based bandwidth measurement by sweeping single-frequency sines across the band:
-- **Frequency range**: 25-55 kHz at 25 Hz steps (1200 measurements)
-- **Method**: For each frequency, drive piezo with pure sine, record 0.3s, extract |H(f)| via single-bin FFT
-- **Runtime**: ~25 minutes
-- **Output**: `stepped_sine_characterization.npz`, standalone plot, and comparison overlay with chirp result
-
-Run with:
-```bash
-python stepped_sine_characterization.py
+```python
+F_LO_HZ   = 38450    # chirp start frequency
+F_HI_HZ   = 44450    # chirp end frequency
+BURST_MS  = 4.0      # minimum burst window width (vtestv1 fix)
+N_TEMPLATE = 100     # periods co-added for templates
+REP_RATE_HZ = 52.632 # SDG repetition rate
 ```
 
-## Barker-7 BPSK Testing Version History
+Search radius in `stubbs_longterm_xcorr_vtestv1.py`: `_search_radius_us = 700.0`
 
-### V1 (June 16, 2026)
-- Initial implementation with broken SDG upload (40,000 samples exceeded 16,384 limit)
-- Waveform played at wrong rate, carrier compressed to ~400 Hz
+---
 
-### V2 (June 16, 2026)
-- Fixed sample count to stay under SDG limit
-- `rep_rate = SDG_SAMPLE_RATE / len(waveform)` preserves carrier frequency
-- **Problem**: No gap between pulses — piezo continuously driven, causing blended correlation peaks
-- TOF inconsistent (1940–9229 μs), FWHM stuck at 10.4 μs (measuring carrier oscillations)
+## Recordings directory
 
-### V3 (June 17, 2026)
-- Added inter-pulse spacing: 40 Hz rep rate, ~21 ms dead time for piezo settling
-- Waveform embedded in 10,000-sample buffer with trailing zeros
+See `recordings/README.md` for a guide to the recording structure.
 
-### V4 (June 17, 2026)
-- **Autocorrelation-based measurement**: Replaced matched-filter cross-correlation with received signal autocorrelation
-  - Previous approach: Cross-correlate received signal with theoretical waveform template
-  - Problem: Template mismatch (theoretical ≠ what piezo actually emits), arbitrary TOF values
-  - V4 approach: Autocorrelate the received signal itself
-  
-- **Why autocorrelation is better**:
-  1. No template mismatch — measures what we actually received
-  2. TOF emerges naturally from peak spacing:
-     - Main peak at lag=0 (signal correlated with itself)
-     - Secondary peak at lag=TOF (incident pulse ⊗ reflected pulse)
-  3. FWHM from main peak = true achievable resolution
+Recordings of interest (all in `recordings/`):
+- `20260728_032243_batping_heattest_30V_take4/` — best-quality heat test (enclosed, 30V)
+- `20260801_150236_batping_heatpad_CVS_enclosure_take3_tmp36/` — heatpad + TMP36 overlay
+- `20260801_162747_batping_heatpad_CVS_enclosure_oscillate_take1/` — oscillation test
+- `20260802_164348_batping_baseline_open_fan/` through `20260802_203333_*` — 12× fan baseline
 
-- **Autocorrelation structure**:
-  ```
-  Received signal contains: incident pulse (t≈0) + reflected pulse (t≈TOF)
-  
-  Autocorrelation peaks:
-    lag = 0      → main peak (largest) → measure FWHM here
-    lag = ±TOF   → incident ⊗ reflected cross-terms → TOF measurement
-    lag = ±25ms  → consecutive pulses (40 Hz rep rate)
-  ```
+---
 
-- **Envelope detection**: Hilbert transform extracts envelope before measuring FWHM/sidelobes
-  - V2/V3 bug: measured carrier oscillations (~10 μs) instead of correlation envelope
+## Documentation
 
-- **Theoretical vs Measured metrics**: Reports both
-  - *Theoretical*: Autocorrelation of computer-generated waveform (ideal pulse compression)
-  - *Measured*: Autocorrelation of received signal (actual achieved resolution)
-
-- Expected results:
-  - Theoretical FWHM: ~1 chip duration (387–1161 μs for 16–48 cyc/chip)
-  - Measured FWHM: Wider due to piezo bandwidth limitation
-  - Theoretical sidelobes: ~-16.9 dB (Barker-7 property)
-  - TOF: ~5800 μs for 2m round-trip (consistent across all cycles/chip)
-
-- **FWHM measurement caveat**: Currently measured at lag=0 (main peak), not at lag=TOF.
-  - Lag=0 FWHM reflects intrinsic waveform resolution
-  - For coded waveforms (Barker, MLS), sidelobes from lag=0 peak can overlap with TOF peak
-  - This interference could degrade actual TOF measurement precision beyond what lag=0 FWHM suggests
-  - Future work: compare lag=0 FWHM vs TOF peak FWHM to quantify this effect
-
-### V5 (June 18, 2026)
-- **Sidelobe fix**: Now calculated relative to main peak (not absolute dB)
-  ```python
-  # V4 (wrong): absolute dB
-  peak_sidelobe_db = 20 * log10(peak_sidelobe)
-  
-  # V5 (correct): relative to main peak
-  peak_sidelobe_db = 20 * log10(peak_sidelobe / main_peak)
-  ```
-  Expected sidelobe levels: Barker-7 = -16.9 dB, Barker-11 = -20.8 dB, Barker-13 = -22.3 dB
-
-- **Transfer efficiency fix**: Normalized by signal length
-  ```python
-  # V4 (wrong): compared autocorr peaks of different-length signals
-  efficiency = max(rx_autocorr) / max(theo_autocorr)  # Meaningless!
-  
-  # V5 (correct): normalize by signal length first
-  theo_peak_norm = max(theo_autocorr) / len(theo_waveform)
-  rx_peak_norm = max(rx_autocorr) / len(received)
-  efficiency = rx_peak_norm / theo_peak_norm
-  ```
-
-- **Data archival system**: Structured output for offline analysis
-  ```
-  recordings/YYYYMMDD_HHMMSS_barker7_sweep/
-  ├── manifest.json    # Run metadata, hardware config, all results
-  ├── raw/*.wav        # Received signals at mic sample rate (384 kHz)
-  ├── plots/*.png      # Individual and summary plots
-  └── results.npz      # Numerical results for programmatic access
-  ```
-
-- **manifest.json** contains: timestamp, version, hardware config, test parameters,
-  and per-measurement results (FWHM, sidelobe, TOF, efficiency) with file paths
-
-## Waveform Comparison — Best σ_TOF Results (July 7, 2026 — fresh 30s recordings)
-
-Primary metric: **σ_TOF** — per-period autocorrelation standard deviation, 30s recording,
-3s live-analysis clip. Secondary: TOF-peak FWHM, HP 30 kHz filter.
-
-| Waveform | σ_TOF (μs) | °C/ping | TOF FWHM (μs) | SNR (dB) | Notes |
-|---|---|---|---|---|---|
-| **bw_6kHz_sym_2ms_flat** | **0.41** | **0.039°C** | 273 | 3.0 | Flat, no compensation — best overall |
-| hf_m15dB_asym_2ms_comp | 0.53 | 0.052°C | 177 | 5.1 | H(f)-matched, compensated |
-| hf_m15dB_asym_2ms_comp_light | 0.64 | 0.062°C | 174 | 5.1 | Reduced-boost compensation |
-| hf_m15dB_asym_2ms_comp_rect | 0.73 | 0.071°C | 164 | 5.1 | Rect window |
-| bw_20kHz_wide_4ms_comp | 1.12 | 0.109°C | 96 | 2.9 | Wide BW, lower SNR |
-| bw_25kHz_wide_2ms_comp | 1.15 | 0.112°C | 99 | 4.4 | |
-| bw_20kHz_wide_4ms_comp_light | 1.31 | 0.127°C | 104 | 4.2 | |
-| Optimized Gaussian V3 | 0.58 | 0.056°C | 281 | — | Bayesian-optimized (June) |
-| Barker-7 16 cyc/chip | 0.52 | 0.050°C | 482 | — | Corrected REP_RATE=40 |
-
-Key finding: **flat uncompensated 6kHz chirp beats all compensated configs** for per-period
-autocorr σ_TOF. Wide BW (20–25kHz) configs are WORSE despite higher TBP because the
-compensation drives the piezo deep into its noise floor, reducing SNR.
-Paul Horowitz's 1 μs/ping target exceeded by 2.4× on the best config.
-
-Stubbs pipeline (first 9s, July 6 data): best σ(Δτ) = 0.26 μs → 0.025°C/ping.
-
-### Key Findings — July 5, 2026
-
-**Window choice matters significantly for short chirps.**
-For a 2 ms chirp, the Hann window tapers ~50% of the signal, costing substantial energy.
-Tukey(0.05) loses only ~5%; rectangular loses nothing. Measured improvement:
-- hf_m15dB_asym_2ms_comp: Hann → 1.02 μs, Tukey → 0.49 μs, Rect → 0.27 μs
-
-**H(f)-derived asymmetric passbands outperform symmetric.**
-The piezo response is asymmetric (extends ~975 Hz further on the low side at −6 dB,
-growing to ~2525 Hz at −20 dB). Chirp passbands matched to the actual H(f) dB-level
-boundaries outperform symmetric passbands of the same nominal bandwidth.
-Best: hf_m15dB (36650–44125 Hz, BW=7475 Hz).
-
-**Wide BW achieves high TBP without overlap.**
-Max safe duration (no incident/reflected overlap) ≈ 5 ms (TOF=5.7 ms).
-Maximum achievable TBP = BW_max × TOF_max ≈ 8400 × 0.0057 ≈ 48 (within piezo -20 dB BW).
-By sweeping beyond the −20 dB piezo boundary (compensation boosts to 20 dB max),
-TBP up to 150 (bw_30kHz_wide_5ms_comp) is achievable — though effective SNR limits
-actual improvement beyond ~TBP=80.
-
-**σ_TOF shows no clean trend with BW despite FWHM doing so.**
-FWHM is deterministic (set by signal bandwidth) → clean monotonic trends.
-σ_TOF depends on SNR at the TOF peak, which varies with ambient noise, temperature
-stability, and SDG clock jitter on the specific 3-second recording window → noisy.
-Remedy: measure SNR_amplitude = A_TOF / σ_noise_floor directly and use
-σ_TOF_theory = FWHM / (3.33 × SNR_amplitude) — see `sigma_tof_derivation.tex`.
-
-### Theoretical σ_TOF (Cramér-Rao Bound)
-
-For a Gaussian-shaped autocorrelation envelope peak in white noise:
-
-```
-σ_TOF_theory = FWHM / (3.33 × SNR_amplitude)
-```
-
-where SNR_amplitude = A_TOF / σ_noise, with σ_noise = RMS of the Hilbert envelope
-in the 15–20 ms lag region (no signal). Now computed live in chirp_sweep.py.
-
-### Chirp Sweep Key Findings (July 2, 2026)
-
-**FWHM depends on bandwidth, not duration.** The 3.75 kHz chirp gives identical TOF FWHM
-at 2 ms, 5 ms, and 10 ms (all ~406–443 μs) — the channel is bandwidth-limited, not
-energy-limited over this range.
-
-**Amplitude compensation** pre-distorts the transmitted envelope by 1/|H(f_inst)| so that
-the received spectrum is approximately flat across the chirp bandwidth.
-Improvement at 2 ms with Tukey window: 6 kHz comp → ~30% narrower FWHM than flat.
-
-**Barker-7 does not outperform Gaussian for this piezo.** Chips shorter than 1/BW (~500 μs)
-are not individually resolved — the sequence acts like a single short pulse. Chips longer
-than 1/BW create wider TOF peaks than V3 (513 μs at 16 cyc/chip). The smallest TOF FWHM
-from Barker (253 μs at 4 cyc/chip) matches V3 but provides no improvement and has
-poor sidelobe suppression (~-10 dB measured vs -16.9 dB theoretical).
-
-### Analysis Pipeline Notes
-
-- **analyze_wav_autocorr_v1.py**: envelope must be computed from FILTERED data (fixed July 2);
-  REP_RATE must match the recording (40 Hz for current setup, 62.5 Hz for older recordings).
-- **chirp_sweep.py**: uses full-signal autocorrelation via `scipy.signal.correlate` (FFT-based,
-  O(N log N)). np.correlate is O(N²) and unusable on recordings > 1s. Received signal
-  clipped to 3s for live analysis; full WAV saved for offline Stubbs analysis.
-- **Hilbert envelope vs zero-crossing**: Hilbert envelope resolves carrier-cycle ambiguity
-  naturally (envelope peaks once at TOF regardless of carrier phase). Zero-crossing
-  detection (Horowitz/Hill approach) gives better precision at high SNR but requires
-  unambiguous cycle identification. At 2 Vpp bench SNR, Hilbert + correlation is preferred.
-- **RECORD_DURATION = 5s** (current): ~300 periods at 60 Hz. N_TEMPLATE=100 for Stubbs
-  pipeline leaves ~200 evaluation periods.
-
-## Key Files
-
-### Scripts
-- `chirp_sweep.py` — LFM chirp sweep (BW, duration, window, comp/flat); full SNR + σ_TOF live
-- `chirp_stubbs_analysis.py` — offline Stubbs dual-template pipeline (co-add N=100, cross-corr)
-- `chirp_reanalyze.py` — reanalyze saved WAVs without hardware
-- `barker7_prbs_testing.py` — Barker-7 chip sweep (V6: TOF FWHM + targeted sidelobe search)
-- `bayesian_optimizer_sdg.py` — Bayesian waveform optimization (Gaussian with pre/post comp)
-- `analyze_wav_autocorr_v1.py` — per-period autocorrelation pipeline for saved WAVs
-- `piezo_characterization.py` — chirp-based bandwidth measurement
-- `stepped_sine_characterization.py` — stepped-sine bandwidth validation
-
-### Documentation
 - `sigma_tof_derivation.tex` — Cramér-Rao derivation of σ_TOF from FWHM and SNR
-
-### Data
-- `piezo_characterization.npz` - Bandwidth measurement data
-- `stepped_sine_characterization.npz` - Stepped-sine piezo response (used for amplitude compensation)
-- `optimized_waveform_v2_autocorr_20260611.npz` - V2 optimized Gaussian waveform
-- `optimized_waveform_v3_autocorr_20260611.npz` - V3 optimized Gaussian waveform
-- `barker7_cycles_sweep_v6.npz` - V6 Barker-7 sweep (full 2–48 cyc, TOF peak FWHM metric)
-- `chirp_sweep_results.npz` - Latest chirp sweep summary (not saved yet; see recordings/)
-- `recordings/` - Archived runs with WAV files and manifests
-
-### Scripts
-- `chirp_sweep.py` - LFM chirp sweep (BW, duration, flat/compensated variants)
-- `chirp_reanalyze.py` - Reanalyze saved chirp WAVs with full-signal autocorrelation
-- `barker7_prbs_testing.py` - Barker-7 chip sweep (V6: targeted sidelobe search, TOF FWHM)
-- `analyze_wav_autocorr_v1.py` - Per-period autocorrelation pipeline for saved WAVs
-
-### Documentation
-- `README_piezo_characterization.md` - Detailed characterization notes
-- `prbs_waveform_theory.tex` - PRBS/LFSR/Barker theory (~30 pages)
-- `waveform_optimization_literature_review.tex` - Literature review
-
-## 25 kHz Noise Investigation (June 30, 2026)
-
-Power spectrum analysis of recorded WAV files revealed a 25 kHz interference spike:
-
-| Recording | 25 kHz Level | 41 kHz Signal | Recording Date |
-|-----------|--------------|---------------|----------------|
-| optimized_v2_response.wav | -26 dB | -34 dB | June 11 |
-| optimized_v3_response.wav | -20 dB | -33 dB | June 11 |
-| barker7_24cyc_received.wav | -115 dB | -53 dB | June 18 |
-
-**Findings:**
-- The 25 kHz noise is environmental (likely lab equipment), not waveform-dependent
-- It was present during June 11 recordings but absent/negligible on June 18
-- A 30 kHz highpass filter removes it without affecting the 40 kHz signal
-
-**V3 autocorrelation artifacts:**
-The optimized_v3 autocorrelation shows prominent envelope oscillations and elevated noise floor compared to v2. Investigation ongoing — the v3 waveform has a narrower spectrum (6.2 kHz vs 4.4 kHz 3dB bandwidth) which may interact differently with the piezo transfer function.
-
-## Dependencies
-
-```
-numpy, scipy, matplotlib
-pyaudio (UltraMic recording)
-scikit-optimize (Bayesian optimization)
-```
+- `prbs_waveform_theory.tex` — Barker/MLS theory
+- `README_piezo_characterization.md` — detailed characterization methodology
+- `advisor_report_20260720.tex` — mid-summer progress report

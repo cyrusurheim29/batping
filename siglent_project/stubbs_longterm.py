@@ -20,14 +20,13 @@ from scipy.io import wavfile
 sys.path.insert(0, os.path.dirname(__file__))
 import chirp_stubbs_analysis as st
 
-SR = 384000
 SDG_SR=400000; SDG_MAX=16384
 
 def rr(dur, dead=15.0):
     return SDG_SR / min(int((dur+dead)/1000*SDG_SR), SDG_MAX)
 
-def hp(s):
-    sos = butter(8, 30000/(SR/2), btype='high', output='sos')
+def hp(s, sr):
+    sos = butter(8, 30000/(sr/2), btype='high', output='sos')
     return sosfiltfilt(sos, s.astype(np.float32)).astype(np.float32)
 
 def fft_shift(x, s):
@@ -66,8 +65,12 @@ def main():
     label = os.path.splitext(os.path.basename(args.wav))[0]
 
     print(f"Loading: {os.path.basename(args.wav)}")
+    import wave as _wave
+    with _wave.open(args.wav) as _wf:
+        SR = _wf.getframerate()
+    print(f"  Sample rate: {SR} Hz")
     fs, raw = wavfile.read(args.wav)
-    assert fs == SR, f"Expected {SR} Hz, got {fs}"
+    assert fs == SR, f"WAV header mismatch: {fs} vs {SR}"
     # Keep as int16 until needed — defers 8GB allocation
     total_samples = len(raw)
     period_n = round(SR / rep)
@@ -79,7 +82,7 @@ def main():
     print("\nDetecting period boundaries from first 2 min...")
     probe_s = min(120, total_samples/SR)
     probe_samples = int(probe_s * SR)
-    probe_sig = hp(raw[:probe_samples].astype(np.float32) / 32768.0)
+    probe_sig = hp(raw[:probe_samples].astype(np.float32) / 32768.0, SR)
     slices_probe = st.adaptive_slice_periods(probe_sig, SR, rep)
     if not slices_probe:
         print("  ERROR: no periods found. Check rep_rate and signal."); return
@@ -184,7 +187,7 @@ def main():
         s_raw = start_period * period_n
         e_raw = end_period   * period_n
         chunk_raw = raw[s_raw:e_raw]
-        chunk_sig = hp(chunk_raw.astype(np.float32) / 32768.0)
+        chunk_sig = hp(chunk_raw.astype(np.float32) / 32768.0, SR)
 
         # Adaptively locate each burst within this chunk — handles any
         # accumulated clock drift transparently.

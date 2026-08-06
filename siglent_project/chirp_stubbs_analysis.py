@@ -40,7 +40,8 @@ import os
 WAV_FILE = None          # Set to path or pass to analyze(); prompts if None
 
 # Rep rate of the recording (Hz). Must match what was used during recording.
-REP_RATE = 40.0
+REP_RATE  = 40.0
+BURST_MS  = 4.0    # chirp burst duration (ms) — used as minimum adaptive window width
 
 # HP filter to remove 25 kHz lab interference
 HP_CUTOFF  = 28000   # bandpass lower edge (rejects 25 kHz secondary resonance + below)
@@ -615,16 +616,40 @@ def detect_windows(period_data, fs, win_half_width_ms=WIN_HALF_WIDTH_MS,
         print(f"  learn_burst_extent: reflected window degenerate, "
               f"using ±{win_half_width_ms:.1f} ms fallback")
 
-    # Cap incident window right edge at inc + 0.4×TOF.
-    # 40% of inter-peak separation keeps the right edge well clear of the
-    # reflected burst onset (~burst_duration/2 before its peak) while still
-    # capturing the full incident ring-down.
-    tof_detected_ms = ref_center_ms - inc_center_ms
-    max_inc_right   = inc_center_ms + tof_detected_ms * 0.4
+    # Cap incident window right edge at ref_onset - 0.5 ms.
+    # Using ref_onset (from learn_burst_extent) instead of inc+0.4×TOF avoids
+    # over-trimming when TOF is large (e.g. 7 ms open-air path) — the old 0.4×TOF
+    # cap cut off the right tail of the incident burst even when there was >1 ms
+    # of clearance to the reflection. Now we only cap if the incident window would
+    # actually crowd the reflection onset.
+    _INC_REF_GAP_MS = 0.5   # minimum gap between incident right and reflection onset
+    max_inc_right   = ref_onset_ms - _INC_REF_GAP_MS
     if inc_offset_ms > max_inc_right:
         print(f"  detect_windows: incident right edge capped to "
-              f"inc+0.4×TOF = {max_inc_right:.2f} ms  (was {inc_offset_ms:.2f} ms)")
+              f"ref_onset-{_INC_REF_GAP_MS:.1f}ms = {max_inc_right:.2f} ms  "
+              f"(was {inc_offset_ms:.2f} ms)")
         inc_offset_ms = max_inc_right
+
+    # Enforce minimum window width = full chirp burst duration.
+    # Upchirps have frequency-dependent amplitude roll-off: the high-freq tail
+    # decays faster, causing learn_burst_extent to terminate early on the right.
+    # A window narrower than BURST_MS always misses part of the chirp regardless
+    # of SNR. Fix by centering a BURST_MS-wide window on the detected peak —
+    # the onset/offset from learn_burst_extent still anchor the left edge when
+    # it's wider, but the right edge is pushed out to at least peak + BURST_MS/2.
+    _min_w = BURST_MS   # ms — full chirp duration
+    if (inc_offset_ms - inc_onset_ms) < _min_w:
+        _half = _min_w / 2.0
+        inc_onset_ms  = max(0.0,        inc_center_ms - _half)
+        inc_offset_ms = min(period_ms,  inc_center_ms + _half)
+        print(f"  detect_windows: incident window expanded to burst width "
+              f"{_min_w:.1f} ms → [{inc_onset_ms:.2f}, {inc_offset_ms:.2f}] ms")
+    if (ref_offset_ms - ref_onset_ms) < _min_w:
+        _half = _min_w / 2.0
+        ref_onset_ms  = max(0.0,        ref_center_ms - _half)
+        ref_offset_ms = min(period_ms,  ref_center_ms + _half)
+        print(f"  detect_windows: reflected window expanded to burst width "
+              f"{_min_w:.1f} ms → [{ref_onset_ms:.2f}, {ref_offset_ms:.2f}] ms")
 
     inc_win = (inc_onset_ms,  inc_offset_ms)
     ref_win = (ref_onset_ms,  ref_offset_ms)

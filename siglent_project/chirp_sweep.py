@@ -64,22 +64,23 @@ CHIRP_CONFIGS = [
     # 30s recordings → ~1800 periods at ~60Hz: 100 for Stubbs template + 1700 eval.
 
     # ── Best performers — Stubbs analysis configs ─────────────────────────────
-    # wide chirps: center 41475 Hz (25 Hz from new 41450 — unchanged)
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp',      'piezo_compensated',       'tukey', 8.64),
-    (28975, 53975, 2.0, 'bw_25kHz_wide_2ms_comp',       'piezo_compensated',       'tukey', 8.14),
-    # asym chirps: updated to new -10 dB crossings (37200–45000 Hz)
-    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_comp_rect',   'piezo_compensated',       'rect',  5.66),
-    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_comp',        'piezo_compensated',       'tukey', 6.60),
-    # 6kHz sym: recentered on 41450 Hz → 38450–44450 Hz
-    (38450, 44450, 2.0, 'bw_6kHz_sym_2ms_flat',         'flat',                    'tukey', 2.33, 23.0),
+    # BSWV H(f), direct SDG, burst-targeted calibration, max 20V — 2026-07-28
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp',      'piezo_compensated',       'tukey', 20.00),
+    (28975, 53975, 2.0, 'bw_25kHz_wide_2ms_comp',       'piezo_compensated',       'tukey', 20.00),
+    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_comp_rect',   'piezo_compensated',       'rect',  20.00),
+    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_comp',        'piezo_compensated',       'tukey', 20.00),
+    (38450, 44450, 2.0, 'bw_6kHz_sym_2ms_flat',         'flat',                    'tukey', 20.00, 23.0),
 
-    # ── Reduced-compensation variants (20% floor = 14dB max boost) ───────────
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp_light', 'piezo_compensated_light', 'tukey', 6.04),
-    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_comp_light',  'piezo_compensated_light', 'tukey', 5.59),
+    # ── Reduced-compensation variants ─────────────────────────────────────────
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_comp_light', 'piezo_compensated_light', 'tukey', 20.00),
+    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_comp_light',  'piezo_compensated_light', 'tukey', 20.00),
 
     # ── Diffraction-compensated variants ──────────────────────────────────────
-    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_diff', 'piezo_compensated_diffraction', 'tukey', 5.97),
-    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_diff',  'piezo_compensated_diffraction', 'tukey', 6.09),
+    (31475, 51475, 4.0, 'bw_20kHz_wide_4ms_diff', 'piezo_compensated_diffraction', 'tukey', 20.00),
+    (37200, 45000, 2.0, 'bw_10dB_asym_2ms_diff',  'piezo_compensated_diffraction', 'tukey', 20.00),
+
+    # ── Flat -3dB BW chirp (no compensation, full resonance drive) ────────────
+    (40300, 42600, 4.0, 'flat3db_40p3_42p6kHz',         'flat',                    'tukey', 20.00),
 ]
 
 # TOF search window for 2 m round trip (~5800 μs)
@@ -129,6 +130,11 @@ class SDG1062X_LAN:
         self.write_raw(cmd_prefix.encode('utf-8') + bin_data + b'\n')
         time.sleep(0.5)
         self.write(f"C{channel}:ARWV NAME,{name}")
+        time.sleep(0.2)
+
+    def delete_waveform(self, name, channel=1):
+        """Delete a user-defined waveform from SDG storage (WVDW command)."""
+        self.write(f"C{channel}:WVDW WVNM,{name}")
         time.sleep(0.2)
 
     def set_arb_mode(self, channel=1):
@@ -334,10 +340,12 @@ def record_period_by_period(pa, mic_index, rep_rate, n_periods, mode='A', settle
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
-def bandpass_filter(sig, fs, f_low, f_high, order=4):
+def bandpass_filter(sig, fs, f_low, f_high, order=8):
+    """Bandpass filter using SOS (numerically stable at order 8)."""
+    from scipy.signal import sosfiltfilt
     nyq = fs / 2
-    b, a = butter(order, [f_low / nyq, f_high / nyq], btype='band')
-    return filtfilt(b, a, sig)
+    sos = butter(order, [f_low / nyq, f_high / nyq], btype='band', output='sos')
+    return sosfiltfilt(sos, sig)
 
 
 def find_peak_parabolic(envelope, lags_us, search_min_us, search_max_us):
@@ -407,7 +415,7 @@ def measure_fwhm_at(envelope, lags_us, peak_us):
 
 
 def per_period_sigma_tof(received, rep_rate, tof_min_us=5000, tof_max_us=6500,
-                         analysis_duration_s=3.0):
+                         analysis_duration_s=3.0, fs=None):
     """
     Per-period σ_TOF — the real temperature precision metric.
     Slices received signal into periods, measures TOF from each via autocorr +
@@ -415,11 +423,13 @@ def per_period_sigma_tof(received, rep_rate, tof_min_us=5000, tof_max_us=6500,
 
     analysis_duration_s: clip to this many seconds for the live analysis
     (full WAV is saved for offline Stubbs analysis — no need to process all 25s here).
+    fs: sample rate in Hz (defaults to DODOMIC_SAMPLE_RATE if not provided).
     """
-    fs = DODOMIC_SAMPLE_RATE
+    if fs is None:
+        fs = DODOMIC_SAMPLE_RATE
     # Clip to first analysis_duration_s for fast live analysis
     clip = int(analysis_duration_s * fs)
-    sig = hp_filter_30k(received[:clip], fs)
+    sig = bandpass_filter(received[:clip], fs, 28000, 65000)
     period_idx = int(fs / rep_rate)
     env_n = np.abs(hilbert(sig)); env_n /= np.max(env_n)
     # Find trigger with numpy (not a Python loop over millions of samples)
@@ -456,7 +466,8 @@ def hp_filter_30k(sig, fs, order=8):
     return sosfiltfilt(sos, sig)
 
 
-def matched_filter_analysis(received, template, f_start, f_stop):
+def matched_filter_analysis(received, template, f_start, f_stop, fs=None,
+                            clip_s=1.0):
     """
     Full-signal autocorrelation approach.
 
@@ -470,13 +481,15 @@ def matched_filter_analysis(received, template, f_start, f_stop):
     is unchanged.  xcorr / xcorr_env / lags_us now hold the autocorrelation
     rather than the cross-correlation; tof_us and fwhm_us are the TOF peak
     position and FWHM; incident_us and sidelobe_db are set to None.
+    fs: sample rate in Hz (defaults to DODOMIC_SAMPLE_RATE if not provided).
+    clip_s: seconds of signal to use (default 1.0 — fast at high sample rates).
     """
-    fs = DODOMIC_SAMPLE_RATE
+    if fs is None:
+        fs = DODOMIC_SAMPLE_RATE
 
-    # Clip to 3s for live analysis — ~150-200 periods, fast enough for statistics.
-    # Full 25s WAV is saved for offline Stubbs analysis.
-    clip = int(3.0 * fs)
-    rx  = hp_filter_30k(received[:clip], fs)
+    # Clip for live analysis — enough periods for a clear autocorr peak.
+    clip = int(clip_s * fs)
+    rx  = bandpass_filter(received[:clip], fs, 28000, 65000)
 
     # Use scipy.signal.correlate (FFT-based, O(N log N)) not np.correlate (O(N²)).
     # np.correlate on 1M+ samples would take hours; scipy handles it in <1s.
@@ -822,6 +835,7 @@ def main():
                 # Concatenate for downstream analysis (same interface as continuous)
                 received = periods.flatten()
             sdg.output_off()
+            sdg.delete_waveform(wf_name)   # free SDG Flash storage slot
 
             # Autocorrelation analysis
             mf = matched_filter_analysis(received, chirp, f_start, f_stop)

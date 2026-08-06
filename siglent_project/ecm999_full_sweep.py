@@ -37,9 +37,10 @@ from picosdk.functions import adc2mV, assert_pico_ok
 RECORD_S       = 30.0
 
 # PicoScope — 12-bit, single channel A
-# Timebase 653: (653-2)×4 = 2604 ns/sample ≈ 384 kHz  (matches DODOMIC_SAMPLE_RATE)
+# TIMEBASE=64 → 1.025 MSa/s (verified by ps5000aGetTimebase2 on PicoScope 5444D,
+# 1-channel 12-bit). Gives 25.6 samples/cycle at 40 kHz (vs ~9.6 at old 384 kHz).
 RESOLUTION     = ps.PS5000A_DEVICE_RESOLUTION["PS5000A_DR_12BIT"]
-TIMEBASE       = 653
+TIMEBASE       = 64             # → 1.025 MSa/s  (was 165 → 384 kHz, now corrected)
 CH_A_RANGE     = ps.PS5000A_RANGE["PS5000A_2V"]       # ±2 V  (SR560 clips at ±1 V output)
 CH_A_COUPLING  = ps.PS5000A_COUPLING["PS5000A_AC"]    # block DC offset from SR560
 
@@ -61,24 +62,25 @@ DURATIONS  = [2.0, 4.0]
 # UltraMic-calibrated Vpp values — may need adjustment for ECM999 sensitivity.
 # Reduce if PicoScope reports overflow; increase if signal is too weak.
 VOLTAGE_MAP = {
-    'a0.2_sm_2ms': 2.27, 'a0.2_sm_4ms': 2.38,
-    'a0.2_md_2ms': 3.17, 'a0.2_md_4ms': 2.92,
-    'a0.2_lg_2ms': 3.42, 'a0.2_lg_4ms': 3.25,
-    'a0.3_sm_2ms': 2.64, 'a0.3_sm_4ms': 2.60,
-    'a0.3_md_2ms': 3.57, 'a0.3_md_4ms': 3.93,
-    'a0.3_lg_2ms': 4.07, 'a0.3_lg_4ms': 3.82,
-    'a0.4_sm_2ms': 2.58, 'a0.4_sm_4ms': 2.80,
-    'a0.4_md_2ms': 4.38, 'a0.4_md_4ms': 4.27,
-    'a0.4_lg_2ms': 5.15, 'a0.4_lg_4ms': 5.18,
-    'a0.5_sm_2ms': 2.95, 'a0.5_sm_4ms': 2.59,
-    'a0.5_md_2ms': 4.59, 'a0.5_md_4ms': 4.24,
-    'a0.5_lg_2ms': 6.19, 'a0.5_lg_4ms': 4.67,
-    'a0.6_sm_2ms': 3.09, 'a0.6_sm_4ms': 2.96,
-    'a0.6_md_2ms': 4.29, 'a0.6_md_4ms': 4.25,
-    'a0.6_lg_2ms': 6.27, 'a0.6_lg_4ms': 5.14,
-    'a0.8_sm_2ms': 3.36, 'a0.8_sm_4ms': 3.26,
-    'a0.8_md_2ms': 5.12, 'a0.8_md_4ms': 4.34,
-    'a0.8_lg_2ms': 5.72, 'a0.8_lg_4ms': 5.35,
+    # Recalibrated 2026-07-28 BSWV H(f), direct SDG (no SPA1010), burst-targeted metric, max 20V
+    'a0.2_sm_2ms': 20.00, 'a0.2_sm_4ms': 20.00,
+    'a0.2_md_2ms': 20.00, 'a0.2_md_4ms': 20.00,
+    'a0.2_lg_2ms': 20.00, 'a0.2_lg_4ms': 20.00,
+    'a0.3_sm_2ms': 20.00, 'a0.3_sm_4ms': 20.00,
+    'a0.3_md_2ms': 20.00, 'a0.3_md_4ms': 20.00,
+    'a0.3_lg_2ms': 20.00, 'a0.3_lg_4ms': 20.00,
+    'a0.4_sm_2ms': 20.00, 'a0.4_sm_4ms': 20.00,
+    'a0.4_md_2ms': 20.00, 'a0.4_md_4ms': 20.00,
+    'a0.4_lg_2ms': 20.00, 'a0.4_lg_4ms': 20.00,
+    'a0.5_sm_2ms': 20.00, 'a0.5_sm_4ms': 20.00,
+    'a0.5_md_2ms': 20.00, 'a0.5_md_4ms': 20.00,
+    'a0.5_lg_2ms': 20.00, 'a0.5_lg_4ms': 20.00,
+    'a0.6_sm_2ms': 20.00, 'a0.6_sm_4ms': 18.34,
+    'a0.6_md_2ms': 17.43, 'a0.6_md_4ms': 20.00,
+    'a0.6_lg_2ms': 20.00, 'a0.6_lg_4ms': 20.00,
+    'a0.8_sm_2ms': 20.00, 'a0.8_sm_4ms': 20.00,
+    'a0.8_md_2ms': 20.00, 'a0.8_md_4ms': 20.00,
+    'a0.8_lg_2ms': 20.00, 'a0.8_lg_4ms': 20.00,
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -177,13 +179,34 @@ def rep_rate(dur_ms):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    run_dir = os.path.join(cs.OUTPUT_DIR, 'recordings', f'{ts}_ecm999_full_sweep_v2_newHf')
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--hf', default=None,
+                    help='Path to H(f) NPZ for pre-compensation (overrides auto-select)')
+    ap.add_argument('--suffix', default='',
+                    help='Extra label appended to run directory (e.g. "enclosure")')
+    args = ap.parse_args()
+
+    ts      = datetime.now().strftime('%Y%m%d_%H%M%S')
+    sfx     = f'_{args.suffix}' if args.suffix else ''
+    run_dir = os.path.join(cs.OUTPUT_DIR, 'recordings', f'{ts}_ecm999_full_sweep_v3_ecmHf{sfx}')
     raw_dir = os.path.join(run_dir, 'raw')
     plt_dir = os.path.join(run_dir, 'plots')
     os.makedirs(raw_dir, exist_ok=True)
     os.makedirs(plt_dir, exist_ok=True)
 
+    if args.hf:
+        cs.PIEZO_CHAR_FILE = args.hf
+    else:
+        import glob as _glob
+        _burst_hf = sorted(_glob.glob(
+            os.path.join(cs.OUTPUT_DIR, 'ecm999_stepped_sine_burst8ms_*.npz')))
+        _bswv_hf  = os.path.join(cs.OUTPUT_DIR,
+                                 'ecm999_stepped_sine_bswv_20260716_013405.npz')
+        # Always prefer the BSWV (continuous sine) measurement — it has far better
+        # SNR than the burst measurement and gives the correct narrow-band H(f).
+        cs.PIEZO_CHAR_FILE = _bswv_hf if os.path.isfile(_bswv_hf) else (_burst_hf[-1] if _burst_hf else None)
+    print(f"  Using H(f): {os.path.basename(cs.PIEZO_CHAR_FILE)}")
     piezo_response = cs.load_piezo_response()
     if piezo_response is None:
         print("ERROR: piezo response not found"); return 1
@@ -268,10 +291,17 @@ def main():
                   f"({f_lo/1000:.0f}–{f_hi/1000:.0f} kHz  "
                   f"{dur_ms:.0f} ms  {ampl_vpp:.2f} Vpp)")
 
-            # Generate chirp
+            # Generate chirp at SDG/analysis sample rates
             kw = dict(alpha=alpha) if alpha is not None else {}
-            _, chirp, _ = cs.generate_lfm_chirp(
+            # SDG-rate chirp (384 kHz) — for waveform upload and SDG buffer
+            _, chirp_sdg, _ = cs.generate_lfm_chirp(
                 f_lo, f_hi, dur_ms, cs.DODOMIC_SAMPLE_RATE,
+                amplitude_shape=amp_shape, piezo_response=piezo_response,
+                window=window, **kw)
+            chirp = chirp_sdg   # alias kept for SDG upload below
+            # PicoScope-rate chirp (actual_fs) — for matched filter analysis
+            _, chirp_rx, _ = cs.generate_lfm_chirp(
+                f_lo, f_hi, dur_ms, actual_fs,
                 amplitude_shape=amp_shape, piezo_response=piezo_response,
                 window=window, **kw)
 
@@ -285,6 +315,7 @@ def main():
             received = record_picoscope(chandle, actual_fs, RECORD_S)
             print("done")
             sdg.output_off()
+            sdg.delete_waveform(wf_name)   # free SDG Flash storage slot
 
             # Save WAV — use actual PicoScope sample rate so analysis tools are exact
             wav_path = os.path.join(raw_dir, f'{label}_received.wav')
@@ -294,7 +325,7 @@ def main():
             # Per-period σ_TOF (uses DODOMIC_SAMPLE_RATE internally; actual_fs ≈ 384 kHz
             # so the 0.006% difference is negligible for σ_TOF estimation)
             tof_mean, tof_std, n_pp, fit_sig = cs.per_period_sigma_tof(
-                received, rr, analysis_duration_s=3.0)
+                received, rr, analysis_duration_s=3.0, fs=actual_fs)
             if tof_std is not None:
                 fit_s = f"  fit_σ={fit_sig*1000:.0f} ns" if fit_sig else ""
                 print(f"  σ_TOF = {tof_std:.3f} μs  →  {tof_std/10.3:.4f}°C/ping"
@@ -303,13 +334,14 @@ def main():
                 print(f"  σ_TOF: not enough periods (N={n_pp})")
 
             # Quick autocorr plot
-            mf = cs.matched_filter_analysis(received, chirp, f_lo, f_hi)
-            n50 = int(0.05 * cs.DODOMIC_SAMPLE_RATE)
+            mf = cs.matched_filter_analysis(received, chirp_rx, f_lo, f_hi,
+                                            fs=actual_fs)
+            n50 = int(0.05 * actual_fs)   # 50 ms at actual PicoScope rate
             result = dict(
                 f_start=f_lo, f_stop=f_hi, bw_hz=abs(f_hi-f_lo),
                 duration_ms=dur_ms, label=label, amp_shape=amp_shape,
                 theo_fwhm_us=cs.theoretical_fwhm_us(f_lo, f_hi),
-                chirp=chirp, received=received[:n50].copy(), mf=mf,
+                chirp=chirp_rx, received=received[:n50].copy(), mf=mf,
                 sigma_tof_us=tof_std, n_periods=n_pp,
             )
             cs.plot_chirp_result(result, (f_lo, f_hi, dur_ms, label, amp_shape, window),

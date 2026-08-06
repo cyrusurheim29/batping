@@ -22,6 +22,11 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
 
+# Ensure PicoSDK shared library is found on macOS
+_pico_lib = '/Library/Frameworks/PicoSDK.framework/Libraries/libps5000a'
+if os.path.isdir(_pico_lib) and _pico_lib not in os.environ.get('DYLD_LIBRARY_PATH',''):
+    os.environ['DYLD_LIBRARY_PATH'] = _pico_lib + ':' + os.environ.get('DYLD_LIBRARY_PATH','')
+
 # PicoScope SDK  (pip install picosdk)
 from picosdk.ps5000a import ps5000a as ps
 from picosdk.functions import adc2mV, assert_pico_ok
@@ -60,7 +65,7 @@ N_AVG         = 1             # single long capture per frequency — see N_SAMP
 # clipping at resonance, full ADC range used.
 # If signal is well below ±100mV across the sweep (check in PicoScope 6 first),
 # switch to PS5000A_200MV for 5× better ADC resolution.
-CH_A_RANGE    = ps.PS5000A_RANGE["PS5000A_1V"]       # ±1 V  (matches SR560 ×100 clip)
+CH_A_RANGE    = ps.PS5000A_RANGE["PS5000A_2V"]       # ±2 V  — resonance peak exceeds ±1V
 CH_A_COUPLING = ps.PS5000A_COUPLING["PS5000A_AC"]    # AC: block SR560 DC offset
 
 # ── PicoScope: Channel B (SDG reference via BNC T-split) ──────────────────────

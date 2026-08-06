@@ -8,6 +8,20 @@ __pycache__/
 *.wav
 *.aiff
 
+# ── Per-chunk analysis PNGs (summary-level PNGs are kept) ────────────────────
+siglent_project/recordings/*/analysis_xcorr_vtestv1/stubbs_pipeline_vtestv1/
+siglent_project/recordings/*/analysis_xcorr_vtest/stubbs_pipeline_vtest/
+siglent_project/recordings/*/analysis_xcorr_vtestv1/chunks/
+siglent_project/recordings/*/analysis_xcorr_vtest/chunks/
+siglent_project/recordings/*/stubbs_pipeline_v*/
+siglent_project/recordings/*/stubbs_pipeline_vtest*/
+
+# ── Intermediate optimizer / checkpoint files ─────────────────────────────────
+siglent_project/bayesian_xcorr_checkpoint_*.npz
+siglent_project/bayesian_opt_*.pkl
+siglent_project/*.zip
+siglent_project/*.bin
+
 # ── Large raw-recording data files (not analysis results) ────────────────────
 siglent_project/bk7_V1.csv
 siglent_project/optimized_analysis.npz

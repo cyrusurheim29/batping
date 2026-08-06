@@ -111,6 +111,7 @@ def main():
                     time.sleep(0.3)
                     received = cs.record_audio(pa, mic_index, RECORD_S)
                     sdg.output_off()
+                    sdg.delete_waveform(wf_name)
 
                     # Save WAV
                     wav_path = os.path.join(raw_dir, f'{label}_received.wav')
